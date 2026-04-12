@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Pacer",
+    "slug": "Pacer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#faf9f6"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pacer.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#faf9f6"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.pacer.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-build-properties",
+      [
+        "@react-native-seoul/kakao-login",
+        {
+          "kakaoAppKey": "103d90f1ec53b569f9cc87b6335802fb"
+        }
+      ]
+    ]
+  }
+}
