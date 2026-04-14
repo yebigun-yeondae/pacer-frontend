@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, Pressable, ScrollView, Alert, KeyboardAvoidingView, Platform,
+  View, Text, StyleSheet, TextInput, Pressable, ScrollView,
+  Alert, KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as KakaoLogin from '@react-native-seoul/kakao-login';
 import { Colors } from '../theme/colors';
+import { loginWithKakao } from '../api/authApi';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 
@@ -18,6 +20,7 @@ export default function AuthScreen({ navigation }: Props) {
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = () => {
     if (!email.trim()) { Alert.alert('', '이메일을 입력해주세요'); return; }
@@ -29,30 +32,47 @@ export default function AuthScreen({ navigation }: Props) {
   const handleSocialLogin = async (provider: string) => {
     if (provider === 'kakao') {
       try {
-        const result = await KakaoLogin.login();
-        console.log('카카오 로그인 성공:', result);
+        setLoading(true);
 
-        // 유저 프로필도 가져오기
+        // 1단계: 카카오 SDK 로그인 → 액세스 토큰 획득
+        const kakaoResult = await KakaoLogin.login();
+        console.log('[Kakao] 토큰 획득:', kakaoResult.accessToken);
+
+        // 2단계: 카카오 프로필 조회
         const profile = await KakaoLogin.getProfile();
-        console.log('카카오 프로필:', profile);
+        console.log('[Kakao] 프로필:', profile.nickname);
 
-        Alert.alert(
-          '카카오 로그인 성공!',
-          `환영합니다, ${profile.nickname}님!\n\n이메일: ${profile.email || '미제공'}`,
-          [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
-        );
+        // 3단계: 백엔드로 카카오 토큰 전달 → 서버 JWT 수신
+        try {
+          const authData = await loginWithKakao({
+            accessToken: kakaoResult.accessToken,
+            kakaoUserId: String(profile.id),
+          });
+          console.log('[Backend] JWT 수신 완료');
+          Alert.alert(
+            '로그인 성공!',
+            `환영합니다, ${authData.user.nickname}님!`,
+            [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
+          );
+        } catch (backendErr: any) {
+          // 백엔드 미연동 상태 — 카카오 인증만으로 진행
+          console.warn('[Backend] 미연동:', backendErr.message);
+          Alert.alert(
+            '카카오 로그인 성공!',
+            `환영합니다, ${profile.nickname}님!`,
+            [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
+          );
+        }
       } catch (err: any) {
-        if (err.code === 'E_CANCELLED_OPERATION') {
-          console.log('카카오 로그인 취소');
-        } else {
-          console.error('카카오 로그인 에러:', err);
+        if (err.code !== 'E_CANCELLED_OPERATION') {
           Alert.alert('로그인 실패', err.message || '카카오 로그인 중 오류가 발생했습니다.');
         }
+      } finally {
+        setLoading(false);
       }
       return;
     }
-    Alert.alert(`${provider} 로그인`, '데모 모드로 진행합니다.');
-    navigation.replace('MainTabs');
+    Alert.alert(`${provider} 로그인`, '준비 중입니다.');
   };
 
   const switchTab = (login: boolean) => {
@@ -173,8 +193,15 @@ export default function AuthScreen({ navigation }: Props) {
             <Pressable style={[styles.socialBtn, { backgroundColor: Colors.bgCard }]} onPress={() => handleSocialLogin('Apple')}>
               <Ionicons name="logo-apple" size={20} color="#303330" />
             </Pressable>
-            <Pressable style={[styles.socialBtn, { backgroundColor: Colors.kakaoYellow }]} onPress={() => handleSocialLogin('kakao')}>
-              <Ionicons name="chatbubble-ellipses" size={20} color="#3C1E1E" />
+            <Pressable
+              style={[styles.socialBtn, { backgroundColor: Colors.kakaoYellow }, loading && { opacity: 0.7 }]}
+              onPress={() => handleSocialLogin('kakao')}
+              disabled={loading}
+            >
+              {loading
+                ? <ActivityIndicator size="small" color="#3C1E1E" />
+                : <Ionicons name="chatbubble-ellipses" size={20} color="#3C1E1E" />
+              }
             </Pressable>
           </View>
         </View>
