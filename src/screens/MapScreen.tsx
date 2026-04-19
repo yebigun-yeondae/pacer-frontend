@@ -12,31 +12,23 @@ import WebView from 'react-native-webview';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  formatRemainingTime, formatArrivalTime, formatDistance, parseOsrmSteps,
+  formatRemainingTime, formatArrivalTime, formatDistance, searchRoute,
 } from '../api/routeApi';
 import type { RouteResponse, NavStep } from '../api/routeApi';
 
-async function searchRouteOSRM(
-  origin: { lat: number; lng: number },
-  dest: { lat: number; lng: number },
-): Promise<{ route: RouteResponse; coordinates: [number, number][]; steps: NavStep[] }> {
-  const url = `http://router.project-osrm.org/route/v1/foot/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson&steps=true`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`OSRM 오류: ${res.status}`);
-  const json = await res.json();
-  if (json.code !== 'Ok' || !json.routes?.length) throw new Error('경로를 찾을 수 없습니다');
-  const r = json.routes[0];
-  const rawSteps = r.legs?.flatMap((leg: any) => leg.steps ?? []) ?? [];
-  return {
-    route: {
-      polyline: '',
-      totalTimeSeconds: Math.round(r.duration),
-      totalDistanceMeters: Math.round(r.distance),
-      signalCheckpoints: [],
-    },
-    coordinates: r.geometry.coordinates as [number, number][],
-    steps: parseOsrmSteps(rawSteps),
-  };
+function decodePolyline(encoded: string): [number, number][] {
+  const coords: [number, number][] = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let b, shift = 0, result = 0;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    shift = 0; result = 0;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coords.push([lng / 1e5, lat / 1e5]);
+  }
+  return coords;
 }
 
 const KAKAO_JS_KEY = 'a05f5eb0d7f2daf71afbbd5762eda83e';
@@ -93,6 +85,8 @@ const kakaoMapHtml = `
 
 const { width, height } = Dimensions.get('window');
 
+type PlaceResult = { id: string; name: string; address: string; lat: string; lng: string };
+
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -103,11 +97,15 @@ export default function MapScreen() {
   const [initialLocation, setInitialLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
   const [searchVisible, setSearchVisible] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ id: string; name: string; address: string; lat: string; lng: string }[]>([]);
+  const [activeField, setActiveField] = useState<'origin' | 'dest'>('dest');
+  const [originQuery, setOriginQuery] = useState('');
+  const [destQuery, setDestQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [origin, setOrigin] = useState<{ name: string; lat: number; lng: number } | null>(null);
   const [destination, setDestination] = useState<{ name: string; lat: number; lng: number } | null>(null);
-  const [selectedResult, setSelectedResult] = useState<{ id: string; name: string; address: string; lat: string; lng: string } | null>(null);
+  const [selectedOrigin, setSelectedOrigin] = useState<PlaceResult | null>(null);
+  const [selectedDest, setSelectedDest] = useState<PlaceResult | null>(null);
   const [routeSteps, setRouteSteps] = useState<NavStep[]>([]);
 
   useEffect(() => {
@@ -121,9 +119,10 @@ export default function MapScreen() {
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSearch = (text: string) => {
-    setSearchQuery(text);
-    setSelectedResult(null);
+  const handleSearchInput = (text: string, field: 'origin' | 'dest') => {
+    setActiveField(field);
+    if (field === 'origin') { setOriginQuery(text); setSelectedOrigin(null); }
+    else { setDestQuery(text); setSelectedDest(null); }
     if (text.trim().length < 2) { setSearchResults([]); return; }
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(async () => {
@@ -151,31 +150,53 @@ export default function MapScreen() {
     }, 350);
   };
 
-  const handleSelectResult = (item: { id: string; name: string; address: string; lat: string; lng: string }) => {
-    setSelectedResult(item);
-    const lat = parseFloat(item.lat);
-    const lng = parseFloat(item.lng);
-    webviewRef.current?.injectJavaScript(`window.showDestination(${lat}, ${lng}); true;`);
+  const handleSelectResult = (item: PlaceResult) => {
+    if (activeField === 'origin') {
+      setSelectedOrigin(item);
+      setOriginQuery(item.name);
+    } else {
+      setSelectedDest(item);
+      setDestQuery(item.name);
+      const lat = parseFloat(item.lat);
+      const lng = parseFloat(item.lng);
+      webviewRef.current?.injectJavaScript(`window.showDestination(${lat}, ${lng}); true;`);
+    }
+    setSearchResults([]);
+  };
+
+  const closeSearchModal = () => {
+    setSearchVisible(false);
+    setSelectedOrigin(null);
+    setSelectedDest(null);
+    setOriginQuery('');
+    setDestQuery('');
+    setSearchResults([]);
+    setActiveField('dest');
   };
 
   const handleConfirmDestination = async () => {
-    if (!selectedResult) return;
-    const lat = parseFloat(selectedResult.lat);
-    const lng = parseFloat(selectedResult.lng);
-    setDestination({ name: selectedResult.name, lat, lng });
-    setSearchVisible(false);
-    setSearchQuery('');
-    setSearchResults([]);
-    setSelectedResult(null);
-    if (!initialLocation) return;
+    if (!selectedDest) return;
+    const destLat = parseFloat(selectedDest.lat);
+    const destLng = parseFloat(selectedDest.lng);
+    const originLat = selectedOrigin ? parseFloat(selectedOrigin.lat) : initialLocation?.latitude;
+    const originLng = selectedOrigin ? parseFloat(selectedOrigin.lng) : initialLocation?.longitude;
+    const originName = selectedOrigin?.name ?? '현재 위치';
+    if (!originLat || !originLng) return;
+    setDestination({ name: selectedDest.name, lat: destLat, lng: destLng });
+    setOrigin(selectedOrigin ? { name: originName, lat: originLat, lng: originLng } : null);
+    closeSearchModal();
     setIsLoadingRoute(true);
     try {
-      const { route, coordinates, steps } = await searchRouteOSRM(
-        { lat: initialLocation.latitude, lng: initialLocation.longitude },
-        { lat, lng },
-      );
+      const route = await searchRoute({
+        origin: { lat: originLat, lng: originLng },
+        destination: { lat: destLat, lng: destLng },
+        originName,
+        destinationName: selectedDest.name,
+        mode: 'BALANCED',
+      });
+      const coordinates = decodePolyline(route.polyline);
       setRouteData(route);
-      setRouteSteps(steps);
+      setRouteSteps([]);
       setSheetExpanded(true);
       webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
     } catch (e: any) {
@@ -202,15 +223,22 @@ export default function MapScreen() {
   };
 
   const fetchRoute = async () => {
-    if (!destination || !initialLocation) return;
+    if (!destination) return;
+    const originLat = origin ? origin.lat : initialLocation?.latitude;
+    const originLng = origin ? origin.lng : initialLocation?.longitude;
+    if (!originLat || !originLng) return;
     setIsLoadingRoute(true);
     try {
-      const { route, coordinates, steps } = await searchRouteOSRM(
-        { lat: initialLocation.latitude, lng: initialLocation.longitude },
-        { lat: destination.lat, lng: destination.lng },
-      );
+      const route = await searchRoute({
+        origin: { lat: originLat, lng: originLng },
+        destination: { lat: destination.lat, lng: destination.lng },
+        originName: origin?.name ?? '현재 위치',
+        destinationName: destination.name,
+        mode: 'BALANCED',
+      });
+      const coordinates = decodePolyline(route.polyline);
       setRouteData(route);
-      setRouteSteps(steps);
+      setRouteSteps([]);
       setSheetExpanded(true);
       webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
     } catch (e: any) {
@@ -286,19 +314,30 @@ export default function MapScreen() {
       )}
 
       {/* 목적지 검색 모달 */}
-      <Modal visible={searchVisible} animationType="slide" transparent onRequestClose={() => { setSearchVisible(false); setSelectedResult(null); setSearchQuery(''); setSearchResults([]); }}>
+      <Modal visible={searchVisible} animationType="slide" transparent onRequestClose={closeSearchModal}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
-            {/* 핸들 */}
             <View style={styles.modalHandle} />
-
             <Text style={styles.modalTitle}>경로 탐색</Text>
 
             {/* 출발지 */}
             <View style={styles.inputRow}>
               <View style={styles.dotOrigin} />
-              <View style={styles.inputBox}>
-                <Text style={styles.inputFixed}>현재 위치</Text>
+              <View style={[styles.inputBox, activeField === 'origin' && styles.inputBoxActive]}>
+                <TextInput
+                  style={styles.inputText}
+                  placeholder="현재 위치"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={originQuery}
+                  onFocus={() => setActiveField('origin')}
+                  onChangeText={(t) => handleSearchInput(t, 'origin')}
+                  returnKeyType="search"
+                />
+                {originQuery.length > 0 && (
+                  <Pressable onPress={() => { setOriginQuery(''); setSelectedOrigin(null); setSearchResults([]); }}>
+                    <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
+                  </Pressable>
+                )}
               </View>
             </View>
 
@@ -307,18 +346,19 @@ export default function MapScreen() {
             {/* 목적지 */}
             <View style={styles.inputRow}>
               <View style={styles.dotDest} />
-              <View style={[styles.inputBox, styles.inputBoxActive]}>
+              <View style={[styles.inputBox, activeField === 'dest' && styles.inputBoxActive]}>
                 <TextInput
                   style={styles.inputText}
                   placeholder="목적지를 검색하세요"
                   placeholderTextColor={Colors.textSecondary}
-                  value={searchQuery}
-                  onChangeText={handleSearch}
+                  value={destQuery}
+                  onFocus={() => setActiveField('dest')}
+                  onChangeText={(t) => handleSearchInput(t, 'dest')}
                   autoFocus
                   returnKeyType="search"
                 />
-                {searchQuery.length > 0 && (
-                  <Pressable onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
+                {destQuery.length > 0 && (
+                  <Pressable onPress={() => { setDestQuery(''); setSelectedDest(null); setSearchResults([]); }}>
                     <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
                   </Pressable>
                 )}
@@ -335,7 +375,9 @@ export default function MapScreen() {
               style={styles.resultList}
               keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => {
-                const isSelected = selectedResult?.id === item.id;
+                const isSelected = activeField === 'origin'
+                  ? selectedOrigin?.id === item.id
+                  : selectedDest?.id === item.id;
                 return (
                   <TouchableOpacity
                     style={[styles.resultItem, isSelected && styles.resultItemSelected]}
@@ -353,9 +395,9 @@ export default function MapScreen() {
             />
 
             <Pressable
-              style={[styles.modalConfirmBtn, !selectedResult && styles.modalConfirmBtnDisabled]}
+              style={[styles.modalConfirmBtn, !selectedDest && styles.modalConfirmBtnDisabled]}
               onPress={handleConfirmDestination}
-              disabled={!selectedResult}
+              disabled={!selectedDest}
             >
               <Ionicons name="navigate" size={18} color="#fff" />
               <Text style={styles.modalConfirmText}>경로 탐색</Text>
