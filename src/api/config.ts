@@ -4,8 +4,8 @@ export const BASE_URL = 'http://43.200.94.130:8080';
 export const API = {
   auth: {
     kakaoLogin: `${BASE_URL}/api/v1/auth/kakao`,  // POST — 카카오 토큰 → 서버 JWT
-    refresh:    `${BASE_URL}/api/auth/refresh`, // POST — JWT 갱신
-    logout:     `${BASE_URL}/api/auth/logout`,  // POST — 로그아웃
+    reissue:    `${BASE_URL}/api/v1/auth/reissue`, // POST — JWT 갱신
+    logout:     `${BASE_URL}/api/v1/auth/logout`,  // POST — 로그아웃
   },
   profile: {
     get: `${BASE_URL}/api/v1/profile`,  // GET — 프로필 조회
