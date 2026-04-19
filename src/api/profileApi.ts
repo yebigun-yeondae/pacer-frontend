@@ -1,11 +1,20 @@
 import { API } from './config';
 import { storage } from '../utils/storage';
 
-export async function getProfile() {
+export interface ProfileResponse {
+  nickname: string;
+  email: string;
+  profileImageUrl: string;
+  avgSpeedMps: number;
+  totalRoutes: number;
+  totalDistanceM: number;
+}
+
+export async function getProfile(): Promise<ProfileResponse> {
   const token = await storage.getToken();
   const res = await fetch(API.profile.get, {
     method: 'GET',
-    headers: { athorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}` },
   });
 
   if (!res.ok) {

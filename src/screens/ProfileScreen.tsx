@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Alert, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { getProfile, ProfileResponse } from '../api/profileApi';
+import { logoutFromServer } from '../api/authApi';
 
 export default function ProfileScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -12,11 +14,21 @@ export default function ProfileScreen() {
   const [transitAlert, setTransitAlert] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [stride, setStride] = useState('65');
+  const [profile, setProfile] = useState<ProfileResponse | null>(null);
+
+  useEffect(() => {
+    getProfile().then(setProfile).catch(() => {});
+  }, []);
 
   const handleLogout = () => {
     Alert.alert('로그아웃', '정말 로그아웃하시겠습니까?', [
       { text: '취소' },
-      { text: '로그아웃', style: 'destructive', onPress: () => nav.reset({ index: 0, routes: [{ name: 'Auth' }] }) },
+      {
+        text: '로그아웃', style: 'destructive', onPress: async () => {
+          await logoutFromServer();
+          nav.reset({ index: 0, routes: [{ name: 'Auth' }] });
+        }
+      },
     ]);
   };
 
@@ -26,9 +38,9 @@ export default function ProfileScreen() {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.avatarBorder}>
-            <View style={styles.avatarInner}><Text style={styles.avatarText}>Y</Text></View>
+            <View style={styles.avatarInner}><Text style={styles.avatarText}>{profile?.nickname?.[0] ?? '?'}</Text></View>
           </View>
-          <Text style={styles.headerTitle}>Serene Walk</Text>
+          <Text style={styles.headerTitle}>{profile?.nickname ?? 'Pacer'}</Text>
         </View>
         <Pressable><Ionicons name="settings-outline" size={18} color={Colors.textSecondary} /></Pressable>
       </View>
@@ -36,12 +48,29 @@ export default function ProfileScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Profile Header */}
         <View style={styles.profileHeader}>
-          <View style={styles.profileAvatar}><Text style={styles.profileAvatarText}>Y</Text></View>
-          <Text style={styles.profileName}>이유진</Text>
-          <Text style={styles.profileEmail}>yujin.lee@example.com</Text>
-          <Pressable style={styles.editBtn} onPress={() => Alert.alert('', '프로필 수정')}>
-            <Text style={styles.editBtnText}>프로필 수정</Text>
-          </Pressable>
+          <View style={styles.profileAvatar}>
+            <Text style={styles.profileAvatarText}>{profile?.nickname?.[0] ?? '?'}</Text>
+          </View>
+          <Text style={styles.profileName}>{profile?.nickname ?? '불러오는 중...'}</Text>
+          <Text style={styles.profileEmail}>{profile?.email ?? ''}</Text>
+        </View>
+
+        {/* Stats */}
+        <View style={styles.statsCard}>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{profile ? profile.totalRoutes : '-'}</Text>
+            <Text style={styles.statLabel}>총 경로</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{profile ? (profile.totalDistanceM / 1000).toFixed(1) : '-'}</Text>
+            <Text style={styles.statLabel}>총 거리 (km)</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{profile ? (profile.avgSpeedMps * 3.6).toFixed(1) : '-'}</Text>
+            <Text style={styles.statLabel}>평균 속도 (km/h)</Text>
+          </View>
         </View>
 
         {/* Walking Settings */}
@@ -154,6 +183,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 25, paddingVertical: 9, marginTop: 12,
   },
   editBtnText: { fontSize: 14, color: Colors.primary },
+
+  statsCard: {
+    backgroundColor: Colors.bgCard, borderRadius: 32, padding: 24,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  statItem: { flex: 1, alignItems: 'center', gap: 4 },
+  statValue: { fontSize: 22, fontWeight: '600', color: Colors.primary },
+  statLabel: { fontSize: 12, color: Colors.textSecondary },
+  statDivider: { width: 1, height: 40, backgroundColor: Colors.borderMedium },
 
   card: { backgroundColor: Colors.bgCard, borderRadius: 32, padding: 24, gap: 20 },
   cardTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },

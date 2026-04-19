@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 
@@ -12,6 +12,7 @@ import MapScreen from '../screens/MapScreen';
 import NavigationScreen from '../screens/NavigationScreen';
 import SavedScreen from '../screens/SavedScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import { checkAutoLogin } from '../api/authApi';
 
 export type RootStackParamList = {
   Onboarding: undefined;
@@ -108,8 +109,21 @@ function MainTabs() {
 }
 
 export default function AppNavigator() {
+  const [initialRoute, setInitialRoute] = useState<'Onboarding' | 'MainTabs' | null>(null);
+
+  useEffect(() => {
+    checkAutoLogin().then(loggedIn => {
+      setInitialRoute(loggedIn ? 'MainTabs' : 'Onboarding');
+    });
+  }, []);
+
+  if (!initialRoute) {
+    return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.bg }}><ActivityIndicator color={Colors.primary} /></View>;
+  }
+
   return (
     <Stack.Navigator
+      initialRouteName={initialRoute}
       screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
     >
       <Stack.Screen name="Onboarding" component={OnboardingScreen} />
