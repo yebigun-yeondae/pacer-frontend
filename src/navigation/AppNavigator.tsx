@@ -13,13 +13,18 @@ import NavigationScreen from '../screens/NavigationScreen';
 import SavedScreen from '../screens/SavedScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import { checkAutoLogin } from '../api/authApi';
+import type { RouteResponse } from '../api/routeApi';
 
 export type RootStackParamList = {
   Onboarding: undefined;
   Auth: undefined;
   MainTabs: undefined;
   MapDetail: undefined;
-  Safety: undefined;
+  Safety: {
+    routeData: RouteResponse;
+    destinationName: string;
+    originName: string;
+  } | undefined;
 };
 
 export type TabParamList = {

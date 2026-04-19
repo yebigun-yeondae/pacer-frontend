@@ -10,4 +10,7 @@ export const API = {
   profile: {
     get: `${BASE_URL}/api/v1/profile`,  // GET — 프로필 조회
   },
+  routes: {
+    search: `${BASE_URL}/api/v1/routes`, // POST — 경로 탐색
+  },
 };

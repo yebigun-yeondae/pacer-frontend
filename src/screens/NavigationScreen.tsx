@@ -2,18 +2,31 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { formatRemainingTime, formatDistance, getNextSignal, PACE_SPEED_MAP } from '../api/routeApi';
 
 export default function NavigationScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList, 'Safety'>>();
-  const [signalCount, setSignalCount] = useState(12);
+  const route = useRoute<RouteProp<RootStackParamList, 'Safety'>>();
+  const params = route.params;
+
+  const nextSignal = getNextSignal(params?.routeData?.signalCheckpoints ?? []);
+  const initialSignal = nextSignal?.etaFromStartSeconds ?? 15;
+  const [signalCount, setSignalCount] = useState(initialSignal);
 
   useEffect(() => {
-    const t = setInterval(() => setSignalCount(c => (c <= 0 ? 15 : c - 1)), 1000);
+    const t = setInterval(() => setSignalCount(c => (c <= 0 ? initialSignal : c - 1)), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [initialSignal]);
+
+  const destinationName = params?.destinationName ?? '목적지';
+  const distance = params?.routeData ? formatDistance(params.routeData.totalDistanceMeters) : '—';
+  const timeInfo = params?.routeData ? formatRemainingTime(params.routeData.totalTimeSeconds) : null;
+  const timeLabel = timeInfo ? `도보 ${timeInfo.value}${timeInfo.unit}` : '—';
+  const speed = PACE_SPEED_MAP[nextSignal?.recommendedPace ?? 'NORMAL'];
 
   return (
     <View style={styles.container}>
@@ -32,8 +45,8 @@ export default function NavigationScreen() {
         {/* Destination Info */}
         <View style={styles.destSection}>
           <View style={styles.destBadge}><Text style={styles.destBadgeText}>Active Navigation</Text></View>
-          <Text style={styles.destName}>광주송정역</Text>
-          <Text style={styles.destDetail}>잔여 거리 520m · 도보 7분</Text>
+          <Text style={styles.destName}>{destinationName}</Text>
+          <Text style={styles.destDetail}>잔여 거리 {distance} · {timeLabel}</Text>
         </View>
 
         {/* Speed Gauge */}
@@ -42,7 +55,7 @@ export default function NavigationScreen() {
             <View style={styles.gaugeTrack} />
             <View style={styles.gaugeActive} />
             <View style={styles.gaugeCenter}>
-              <Text style={styles.gaugeValue}>4.8</Text>
+              <Text style={styles.gaugeValue}>{speed}</Text>
               <Text style={styles.gaugeLabel}>km/h로 걸으세요</Text>
             </View>
             <View style={styles.signalFloat}>
