@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../theme/colors';
 
 import OnboardingScreen from '../screens/OnboardingScreen';
@@ -13,7 +14,7 @@ import NavigationScreen from '../screens/NavigationScreen';
 import SavedScreen from '../screens/SavedScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import { checkAutoLogin } from '../api/authApi';
-import type { RouteResponse } from '../api/routeApi';
+import type { RouteResponse, NavStep } from '../api/routeApi';
 
 export type RootStackParamList = {
   Onboarding: undefined;
@@ -24,6 +25,7 @@ export type RootStackParamList = {
     routeData: RouteResponse;
     destinationName: string;
     originName: string;
+    steps: NavStep[];
   } | undefined;
 };
 
@@ -38,6 +40,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<TabParamList>();
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 80 + insets.bottom;
   return (
     <Tab.Navigator
       screenOptions={{
@@ -48,8 +52,8 @@ function MainTabs() {
           borderTopLeftRadius: 32,
           borderTopRightRadius: 32,
           position: 'absolute',
-          height: 80,
-          paddingBottom: 20,
+          height: tabBarHeight,
+          paddingBottom: insets.bottom + 10,
           paddingTop: 10,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: -4 },

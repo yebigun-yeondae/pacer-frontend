@@ -1,17 +1,46 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, Dimensions } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View, Text, StyleSheet, Pressable, Dimensions,
+  Modal, TextInput, FlatList, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Platform, Alert,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import WebView from 'react-native-webview';
+import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  searchRoute, formatRemainingTime, formatArrivalTime, getNextSignal, PACE_SPEED_MAP,
+  formatRemainingTime, formatArrivalTime, formatDistance, parseOsrmSteps,
 } from '../api/routeApi';
-import type { RouteResponse } from '../api/routeApi';
+import type { RouteResponse, NavStep } from '../api/routeApi';
+
+async function searchRouteOSRM(
+  origin: { lat: number; lng: number },
+  dest: { lat: number; lng: number },
+): Promise<{ route: RouteResponse; coordinates: [number, number][]; steps: NavStep[] }> {
+  const url = `http://router.project-osrm.org/route/v1/foot/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson&steps=true`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`OSRM 오류: ${res.status}`);
+  const json = await res.json();
+  if (json.code !== 'Ok' || !json.routes?.length) throw new Error('경로를 찾을 수 없습니다');
+  const r = json.routes[0];
+  const rawSteps = r.legs?.flatMap((leg: any) => leg.steps ?? []) ?? [];
+  return {
+    route: {
+      polyline: '',
+      totalTimeSeconds: Math.round(r.duration),
+      totalDistanceMeters: Math.round(r.distance),
+      signalCheckpoints: [],
+    },
+    coordinates: r.geometry.coordinates as [number, number][],
+    steps: parseOsrmSteps(rawSteps),
+  };
+}
 
 const KAKAO_JS_KEY = 'a05f5eb0d7f2daf71afbbd5762eda83e';
+const KAKAO_REST_KEY = 'e8fddbe461ffc538f65892ce98f4908f';
 
 const kakaoMapHtml = `
 <!DOCTYPE html>
@@ -29,18 +58,35 @@ const kakaoMapHtml = `
       center: new kakao.maps.LatLng(37.5665, 126.9780),
       level: 3
     });
-    // 현재 위치 수신
-    window.addEventListener('message', function(e) {
-      try {
-        var data = JSON.parse(e.data);
-        if (data.type === 'moveToLocation') {
-          var pos = new kakao.maps.LatLng(data.lat, data.lng);
-          map.setCenter(pos);
-          new kakao.maps.Marker({ map: map, position: pos });
-        }
-      } catch(_) {}
-    });
-  </script>
+    var currentMarker = null;
+    var destMarker = null;
+
+    window.showDestination = function(lat, lng) {
+      var pos = new kakao.maps.LatLng(lat, lng);
+      if (destMarker) destMarker.setMap(null);
+      destMarker = new kakao.maps.Marker({ map: map, position: pos });
+      map.setCenter(pos);
+      map.setLevel(3);
+    };
+
+    var routePolyline = null;
+    window.drawRoute = function(coordsJson) {
+      var coords = JSON.parse(coordsJson);
+      var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+      if (routePolyline) routePolyline.setMap(null);
+      routePolyline = new kakao.maps.Polyline({
+        path: path,
+        strokeWeight: 5,
+        strokeColor: '#516452',
+        strokeOpacity: 0.85,
+        strokeStyle: 'solid'
+      });
+      routePolyline.setMap(map);
+      var bounds = new kakao.maps.LatLngBounds();
+      path.forEach(function(p) { bounds.extend(p); });
+      map.setBounds(bounds);
+    };
+</script>
 </body>
 </html>
 `;
@@ -48,36 +94,127 @@ const kakaoMapHtml = `
 const { width, height } = Dimensions.get('window');
 
 export default function MapScreen() {
+  const insets = useSafeAreaInsets();
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const [routeData, setRouteData] = useState<RouteResponse | null>(null);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const webviewRef = useRef<WebView>(null);
+  const [initialLocation, setInitialLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
-  const moveToCurrentLocation = () => {
-    navigator.geolocation?.getCurrentPosition(pos => {
-      webviewRef.current?.postMessage(JSON.stringify({
-        type: 'moveToLocation',
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-      }));
-    });
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ id: string; name: string; address: string; lat: string; lng: string }[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [destination, setDestination] = useState<{ name: string; lat: number; lng: number } | null>(null);
+  const [selectedResult, setSelectedResult] = useState<{ id: string; name: string; address: string; lat: string; lng: string } | null>(null);
+  const [routeSteps, setRouteSteps] = useState<NavStep[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+      const pos = await Location.getCurrentPositionAsync({});
+      setInitialLocation(pos.coords);
+    })();
+  }, []);
+
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+    setSelectedResult(null);
+    if (text.trim().length < 2) { setSearchResults([]); return; }
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await fetch(
+          `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(text)}&size=8`,
+          { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } }
+        );
+        const json = await res.json();
+        setSearchResults(
+          (json.documents ?? []).map((p: any) => ({
+            id: p.id,
+            name: p.place_name,
+            address: p.road_address_name || p.address_name,
+            lat: p.y,
+            lng: p.x,
+          }))
+        );
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 350);
+  };
+
+  const handleSelectResult = (item: { id: string; name: string; address: string; lat: string; lng: string }) => {
+    setSelectedResult(item);
+    const lat = parseFloat(item.lat);
+    const lng = parseFloat(item.lng);
+    webviewRef.current?.injectJavaScript(`window.showDestination(${lat}, ${lng}); true;`);
+  };
+
+  const handleConfirmDestination = async () => {
+    if (!selectedResult) return;
+    const lat = parseFloat(selectedResult.lat);
+    const lng = parseFloat(selectedResult.lng);
+    setDestination({ name: selectedResult.name, lat, lng });
+    setSearchVisible(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSelectedResult(null);
+    if (!initialLocation) return;
+    setIsLoadingRoute(true);
+    try {
+      const { route, coordinates, steps } = await searchRouteOSRM(
+        { lat: initialLocation.latitude, lng: initialLocation.longitude },
+        { lat, lng },
+      );
+      setRouteData(route);
+      setRouteSteps(steps);
+      setSheetExpanded(true);
+      webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
+    } catch (e: any) {
+      Alert.alert('경로 탐색 실패', e.message ?? String(e));
+    } finally {
+      setIsLoadingRoute(false);
+    }
+  };
+
+  const moveToCurrentLocation = async () => {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return;
+    const pos = await Location.getCurrentPositionAsync({});
+    const { latitude, longitude } = pos.coords;
+    webviewRef.current?.injectJavaScript(`
+      (function() {
+        var pos = new kakao.maps.LatLng(${latitude}, ${longitude});
+        map.setCenter(pos);
+        if (currentMarker) currentMarker.setMap(null);
+        currentMarker = new kakao.maps.Marker({ map: map, position: pos });
+      })();
+      true;
+    `);
   };
 
   const fetchRoute = async () => {
+    if (!destination || !initialLocation) return;
     setIsLoadingRoute(true);
     try {
-      const data = await searchRoute({
-        origin: { lat: 35.1595, lng: 126.8526 },
-        destination: { lat: 35.1512, lng: 126.8611 },
-        originName: '광주역',
-        destinationName: '충장로',
-        mode: 'BALANCED',
-      });
-      setRouteData(data);
+      const { route, coordinates, steps } = await searchRouteOSRM(
+        { lat: initialLocation.latitude, lng: initialLocation.longitude },
+        { lat: destination.lat, lng: destination.lng },
+      );
+      setRouteData(route);
+      setRouteSteps(steps);
       setSheetExpanded(true);
+      webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
     } catch (e: any) {
-      console.warn('[Route] 탐색 실패:', e.message);
+      Alert.alert('경로 탐색 실패', e.message ?? String(e));
     } finally {
       setIsLoadingRoute(false);
     }
@@ -93,16 +230,20 @@ export default function MapScreen() {
           style={{ flex: 1 }}
           javaScriptEnabled
           domStorageEnabled
+          onLoad={() => {
+            if (!initialLocation) return;
+            const { latitude, longitude } = initialLocation;
+            webviewRef.current?.injectJavaScript(`
+              (function() {
+                var pos = new kakao.maps.LatLng(${latitude}, ${longitude});
+                map.setCenter(pos);
+                if (currentMarker) currentMarker.setMap(null);
+                currentMarker = new kakao.maps.Marker({ map: map, position: pos });
+              })();
+              true;
+            `);
+          }}
         />
-        {/* FABs */}
-        <View style={styles.fabs}>
-          <Pressable style={styles.fab} onPress={moveToCurrentLocation}>
-            <Ionicons name="locate" size={20} color={Colors.textSecondary} />
-          </Pressable>
-          <Pressable style={styles.fab}>
-            <Ionicons name="layers-outline" size={20} color={Colors.textSecondary} />
-          </Pressable>
-        </View>
       </View>
 
       {/* Header */}
@@ -113,28 +254,120 @@ export default function MapScreen() {
         <Text style={styles.headerTitle}>Explore Paths</Text>
       </View>
 
-      {/* 경로 탐색 버튼 (탐색 전) */}
+      {/* 경로 탐색 버튼 + FABs (탐색 전) */}
       {!routeData && (
-        <Pressable
-          style={({ pressed }) => [styles.searchBtn, pressed && { opacity: 0.85 }]}
-          onPress={fetchRoute}
-          disabled={isLoadingRoute}
-        >
-          <Ionicons name="navigate-outline" size={18} color="#fff" />
-          <Text style={styles.searchBtnText}>
-            {isLoadingRoute ? '탐색 중...' : '경로 탐색'}
-          </Text>
-        </Pressable>
+        <View style={[styles.bottomCol, { bottom: 80 + insets.bottom + 16 }]}>
+          {destination && (
+            <Pressable style={styles.destChip} onPress={() => setSearchVisible(true)}>
+              <Ionicons name="location" size={14} color={Colors.primary} />
+              <Text style={styles.destChipText} numberOfLines={1}>{destination.name}</Text>
+              <Ionicons name="pencil" size={12} color={Colors.textSecondary} />
+            </Pressable>
+          )}
+          <View style={styles.bottomRow}>
+            <Pressable style={styles.fab} onPress={moveToCurrentLocation}>
+              <Ionicons name="locate" size={20} color={Colors.textSecondary} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.searchBtn, pressed && { opacity: 0.85 }]}
+              onPress={destination ? fetchRoute : () => setSearchVisible(true)}
+              disabled={isLoadingRoute}
+            >
+              <Ionicons name="navigate-outline" size={18} color="#fff" />
+              <Text style={styles.searchBtnText}>
+                {isLoadingRoute ? '탐색 중...' : destination ? '경로 탐색' : '목적지 설정'}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.safetyFab} onPress={() => nav.navigate('Safety', undefined)}>
+              <Ionicons name="shield-checkmark" size={22} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
       )}
+
+      {/* 목적지 검색 모달 */}
+      <Modal visible={searchVisible} animationType="slide" transparent onRequestClose={() => { setSearchVisible(false); setSelectedResult(null); setSearchQuery(''); setSearchResults([]); }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            {/* 핸들 */}
+            <View style={styles.modalHandle} />
+
+            <Text style={styles.modalTitle}>경로 탐색</Text>
+
+            {/* 출발지 */}
+            <View style={styles.inputRow}>
+              <View style={styles.dotOrigin} />
+              <View style={styles.inputBox}>
+                <Text style={styles.inputFixed}>현재 위치</Text>
+              </View>
+            </View>
+
+            <View style={styles.inputDivider} />
+
+            {/* 목적지 */}
+            <View style={styles.inputRow}>
+              <View style={styles.dotDest} />
+              <View style={[styles.inputBox, styles.inputBoxActive]}>
+                <TextInput
+                  style={styles.inputText}
+                  placeholder="목적지를 검색하세요"
+                  placeholderTextColor={Colors.textSecondary}
+                  value={searchQuery}
+                  onChangeText={handleSearch}
+                  autoFocus
+                  returnKeyType="search"
+                />
+                {searchQuery.length > 0 && (
+                  <Pressable onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
+                    <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
+                  </Pressable>
+                )}
+              </View>
+            </View>
+
+            {/* 검색 결과 */}
+            {isSearching && (
+              <ActivityIndicator style={{ marginTop: 24 }} color={Colors.primary} />
+            )}
+            <FlatList
+              data={searchResults}
+              keyExtractor={(item) => item.id}
+              style={styles.resultList}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => {
+                const isSelected = selectedResult?.id === item.id;
+                return (
+                  <TouchableOpacity
+                    style={[styles.resultItem, isSelected && styles.resultItemSelected]}
+                    onPress={() => handleSelectResult(item)}
+                  >
+                    <Ionicons name="location-outline" size={18} color={isSelected ? Colors.primary : Colors.textSecondary} style={{ marginTop: 2 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.resultName, isSelected && { color: Colors.primary }]}>{item.name}</Text>
+                      <Text style={styles.resultAddress}>{item.address}</Text>
+                    </View>
+                    {isSelected && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+
+            <Pressable
+              style={[styles.modalConfirmBtn, !selectedResult && styles.modalConfirmBtnDisabled]}
+              onPress={handleConfirmDestination}
+              disabled={!selectedResult}
+            >
+              <Ionicons name="navigate" size={18} color="#fff" />
+              <Text style={styles.modalConfirmText}>경로 탐색</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* Bottom Sheet (탐색 후) */}
       {routeData && (() => {
         const time = formatRemainingTime(routeData.totalTimeSeconds);
-        const nextSignal = getNextSignal(routeData.signalCheckpoints);
-        const speed = PACE_SPEED_MAP[nextSignal?.recommendedPace ?? 'NORMAL'];
-        const signalEta = nextSignal
-          ? `${Math.round(nextSignal.etaFromStartSeconds / routeData.totalTimeSeconds * routeData.totalDistanceMeters)}m 뒤\n${nextSignal.signalState === 'GREEN' ? '초록불' : '빨간불'}`
-          : '신호 없음';
+        const distanceStr = formatDistance(routeData.totalDistanceMeters);
         return (
           <View style={[styles.sheet, !sheetExpanded && { transform: [{ translateY: 260 }] }]}>
             <Pressable style={styles.sheetHandle} onPress={() => setSheetExpanded(!sheetExpanded)} />
@@ -154,22 +387,23 @@ export default function MapScreen() {
                   <Ionicons name="flash" size={14} color={Colors.primary} />
                   <Text style={styles.statLabel}>권장 속도</Text>
                 </View>
-                <Text style={styles.statValue}>{speed} km/h로{'\n'}걸으세요</Text>
+                <Text style={styles.statValue}>4.8 km/h로{'\n'}걸으세요</Text>
               </View>
               <View style={styles.statCard}>
                 <View style={styles.statHeader}>
-                  <Ionicons name="time-outline" size={14} color={Colors.primary} />
-                  <Text style={styles.statLabel}>다음 신호</Text>
+                  <Ionicons name="map-outline" size={14} color={Colors.primary} />
+                  <Text style={styles.statLabel}>총 거리</Text>
                 </View>
-                <Text style={styles.statValue}>{signalEta}</Text>
+                <Text style={styles.statValue}>{distanceStr}</Text>
               </View>
             </View>
             <Pressable
               style={({ pressed }) => [styles.endBtn, pressed && { opacity: 0.9 }]}
               onPress={() => nav.navigate('Safety', {
                 routeData,
-                destinationName: '충장로',
-                originName: '광주역',
+                destinationName: destination?.name ?? '',
+                originName: '현재 위치',
+                steps: routeSteps,
               })}
             >
               <Text style={styles.endBtnText}>경로 안내 시작</Text>
@@ -186,11 +420,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#e2dfd6' },
   mapBg: { flex: 1, position: 'relative' },
 
-  fabs: { position: 'absolute', right: 24, top: height * 0.45, gap: 12 },
+  bottomRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12,
+  },
   fab: {
     width: 48, height: 48, backgroundColor: '#fff', borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 6,
+  },
+  safetyFab: {
+    width: 56, height: 56, backgroundColor: Colors.primary, borderRadius: 28,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8,
   },
 
   header: {
@@ -232,8 +473,56 @@ const styles = StyleSheet.create({
   },
   endBtnText: { fontSize: 16, fontWeight: '500', color: '#fff' },
 
+  bottomCol: {
+    position: 'absolute', bottom: 100, left: 24, right: 24, zIndex: 10,
+    alignItems: 'center', gap: 10,
+  },
+  destChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 4,
+    maxWidth: '80%',
+  },
+  destChipText: { flex: 1, fontSize: 13, fontWeight: '600', color: Colors.textPrimary },
+
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.35)' },
+  modalSheet: {
+    backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 24, paddingBottom: 40, maxHeight: '80%',
+  },
+  modalHandle: { width: 48, height: 4, backgroundColor: '#d1d5db', borderRadius: 2, alignSelf: 'center', marginVertical: 14 },
+  modalTitle: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary, marginBottom: 20 },
+
+  inputRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
+  dotOrigin: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary },
+  dotDest: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#ef4444' },
+  inputBox: {
+    flex: 1, backgroundColor: '#f3f4f6', borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center',
+  },
+  inputBoxActive: { borderWidth: 1.5, borderColor: Colors.primary, backgroundColor: '#fff' },
+  inputFixed: { fontSize: 15, color: Colors.textSecondary, fontWeight: '500' },
+  inputText: { flex: 1, fontSize: 15, color: Colors.textPrimary, padding: 0 },
+  inputDivider: { width: 1, height: 10, backgroundColor: '#d1d5db', marginLeft: 4, marginBottom: 4 },
+
+  resultList: { marginTop: 12 },
+  resultItem: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+  },
+  resultName: { fontSize: 15, fontWeight: '600', color: Colors.textPrimary, marginBottom: 3 },
+  resultAddress: { fontSize: 12, color: Colors.textSecondary },
+
+  resultItemSelected: { backgroundColor: 'rgba(81,100,82,0.06)', borderRadius: 12, marginHorizontal: -4, paddingHorizontal: 4 },
+
+  modalConfirmBtn: {
+    marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 16, paddingVertical: 16,
+  },
+  modalConfirmBtnDisabled: { backgroundColor: '#d1d5db' },
+  modalConfirmText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+
   searchBtn: {
-    position: 'absolute', bottom: 100, alignSelf: 'center', zIndex: 10,
     backgroundColor: Colors.primary, borderRadius: 24,
     paddingHorizontal: 28, paddingVertical: 16,
     flexDirection: 'row', alignItems: 'center', gap: 8,

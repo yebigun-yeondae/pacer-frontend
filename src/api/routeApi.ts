@@ -76,3 +76,55 @@ export function formatDistance(meters: number): string {
 export function getNextSignal(checkpoints: SignalCheckpoint[]): SignalCheckpoint | null {
   return checkpoints.length > 0 ? checkpoints[0] : null;
 }
+
+export interface NavStep {
+  instruction: string;
+  streetName: string;
+  distance: number;
+  icon: string;
+  location: [number, number]; // [lng, lat]
+}
+
+export function parseOsrmSteps(steps: any[]): NavStep[] {
+  return steps
+    .filter((s: any) => s.maneuver?.type !== 'depart' || s.distance > 0)
+    .map((s: any) => {
+      const type: string = s.maneuver?.type ?? '';
+      const modifier: string = s.maneuver?.modifier ?? '';
+      const name: string = s.name ?? '';
+
+      let direction = '직진';
+      let icon = 'arrow-up';
+
+      if (type === 'arrive') {
+        direction = '목적지 도착';
+        icon = 'location';
+      } else if (type === 'depart') {
+        direction = '출발';
+        icon = 'navigate-outline';
+      } else if (modifier === 'right' || modifier === 'sharp right') {
+        direction = '우회전';
+        icon = 'arrow-forward';
+      } else if (modifier === 'left' || modifier === 'sharp left') {
+        direction = '좌회전';
+        icon = 'arrow-back';
+      } else if (modifier === 'slight right') {
+        direction = '오른쪽으로';
+        icon = 'arrow-forward-outline';
+      } else if (modifier === 'slight left') {
+        direction = '왼쪽으로';
+        icon = 'arrow-back-outline';
+      } else if (modifier === 'uturn') {
+        direction = '유턴';
+        icon = 'return-up-back';
+      }
+
+      return {
+        instruction: direction,
+        streetName: name,
+        distance: Math.round(s.distance),
+        icon,
+        location: s.maneuver?.location ?? [0, 0],
+      };
+    });
+}

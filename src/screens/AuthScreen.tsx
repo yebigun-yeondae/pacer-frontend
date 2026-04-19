@@ -55,14 +55,8 @@ export default function AuthScreen({ navigation }: Props) {
             [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
           );
         } catch (backendErr: any) {
-          // 백엔드 미연동 상태 — 카카오 인증만으로 진행
-          console.warn('[Backend] 미연동:', backendErr.message);
-          const displayName = profile.nickname || (profile as any).email || '사용자';
-          Alert.alert(
-            '카카오 로그인 성공!',
-            `환영합니다, ${displayName}님!`,
-            [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
-          );
+          console.warn('[Backend] 오류:', backendErr.message);
+          Alert.alert('로그인 실패', backendErr.message || '서버 연결에 실패했습니다.');
         }
       } catch (err: any) {
         if (err.code !== 'E_CANCELLED_OPERATION') {
