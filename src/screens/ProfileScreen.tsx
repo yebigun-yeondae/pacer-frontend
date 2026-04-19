@@ -25,11 +25,9 @@ export default function ProfileScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Pressable onPress={() => nav.goBack()}>
-            <View style={styles.avatarBorder}>
-              <View style={styles.avatarInner}><Text style={styles.avatarText}>Y</Text></View>
-            </View>
-          </Pressable>
+          <View style={styles.avatarBorder}>
+            <View style={styles.avatarInner}><Text style={styles.avatarText}>Y</Text></View>
+          </View>
           <Text style={styles.headerTitle}>Serene Walk</Text>
         </View>
         <Pressable><Ionicons name="settings-outline" size={18} color={Colors.textSecondary} /></Pressable>

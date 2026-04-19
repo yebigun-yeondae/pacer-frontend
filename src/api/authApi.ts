@@ -2,19 +2,12 @@ import { API } from './config';
 import { storage } from '../utils/storage';
 
 export interface KakaoLoginRequest {
-  accessToken: string;  // 카카오 액세스 토큰
-  kakaoUserId: string;  // 카카오 유저 ID
+  accessToken: string;
 }
 
 export interface AuthResponse {
   accessToken: string;
   refreshToken?: string;
-  user: {
-    id: string;
-    nickname: string;
-    email: string;
-    profileImage?: string;
-  };
 }
 
 // 카카오 토큰 → 백엔드 로그인 → 서버 JWT 저장
@@ -32,7 +25,6 @@ export async function loginWithKakao(payload: KakaoLoginRequest): Promise<AuthRe
 
   const data: AuthResponse = await res.json();
   await storage.saveToken(data.accessToken);
-  await storage.saveUser(data.user);
   return data;
 }
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Image, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 
@@ -18,27 +18,18 @@ export type RootStackParamList = {
   Auth: undefined;
   MainTabs: undefined;
   MapDetail: undefined;
-  Profile: undefined;
+  Safety: undefined;
 };
 
 export type TabParamList = {
-  Search: undefined;
-  Navigation: undefined;
+  Home: undefined;
+  Map: undefined;
   Saved: undefined;
+  Profile: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<TabParamList>();
-
-function ProfileAvatar({ onPress }: { onPress: () => void }) {
-  return (
-    <View style={styles.avatarWrap}>
-      <View style={styles.avatar}>
-        <Ionicons name="person" size={14} color="#fff" />
-      </View>
-    </View>
-  );
-}
 
 function MainTabs() {
   return (
@@ -73,22 +64,22 @@ function MainTabs() {
       }}
     >
       <Tab.Screen
-        name="Search"
+        name="Home"
         component={SearchScreen}
         options={{
-          tabBarLabel: 'Map',
+          tabBarLabel: 'Home',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="map-outline" size={size - 4} color={color} />
+            <Ionicons name="home-outline" size={size - 4} color={color} />
           ),
         }}
       />
       <Tab.Screen
-        name="Navigation"
-        component={NavigationScreen}
+        name="Map"
+        component={MapScreen}
         options={{
-          tabBarLabel: 'Safety',
+          tabBarLabel: 'Map',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="shield-checkmark-outline" size={size - 4} color={color} />
+            <Ionicons name="map-outline" size={size - 4} color={color} />
           ),
         }}
       />
@@ -99,6 +90,16 @@ function MainTabs() {
           tabBarLabel: 'Saved',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="bookmark-outline" size={size - 4} color={color} />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Profile"
+        component={ProfileScreen}
+        options={{
+          tabBarLabel: 'Profile',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="person-outline" size={size - 4} color={color} />
           ),
         }}
       />
@@ -115,17 +116,9 @@ export default function AppNavigator() {
       <Stack.Screen name="Auth" component={AuthScreen} />
       <Stack.Screen name="MainTabs" component={MainTabs} />
       <Stack.Screen name="MapDetail" component={MapScreen} />
-      <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="Safety" component={NavigationScreen} options={{ animation: 'slide_from_bottom' }} />
     </Stack.Navigator>
   );
 }
 
-const styles = StyleSheet.create({
-  avatarWrap: { marginRight: 12 },
-  avatar: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: '#c5a882',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: Colors.bgInput,
-  },
-});
+const styles = StyleSheet.create({});

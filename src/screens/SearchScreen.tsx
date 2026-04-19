@@ -47,6 +47,13 @@ export default function SearchScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Safety FAB */}
+      <Pressable
+        style={({ pressed }) => [styles.safetyFab, pressed && { opacity: 0.85 }]}
+        onPress={() => nav.navigate('Safety')}
+      >
+        <Ionicons name="shield-checkmark" size={22} color="#fff" />
+      </Pressable>
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
@@ -195,4 +202,22 @@ const styles = StyleSheet.create({
   busBadgeText: { fontSize: 11, fontWeight: '600', letterSpacing: -0.55 },
   busDest: { fontSize: 14, color: Colors.textPrimary },
   busTime: { fontSize: 14, color: Colors.textSecondary },
+
+  safetyFab: {
+    position: 'absolute',
+    right: 24,
+    bottom: 100,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
 });

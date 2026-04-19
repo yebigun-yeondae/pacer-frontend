@@ -34,32 +34,33 @@ export default function AuthScreen({ navigation }: Props) {
       try {
         setLoading(true);
 
-        // 1단계: 카카오 SDK 로그인 → 액세스 토큰 획득
-        const kakaoResult = await KakaoLogin.login();
+        // 1단계: 웹 브라우저 로그인으로 동의 창 강제 표시
+        try { await KakaoLogin.logout(); } catch (_) {}
+        const kakaoResult = await KakaoLogin.loginWithKakaoAccount();
         console.log('[Kakao] 토큰 획득:', kakaoResult.accessToken);
 
         // 2단계: 카카오 프로필 조회
         const profile = await KakaoLogin.getProfile();
-        console.log('[Kakao] 프로필:', profile.nickname);
+        console.log('[Kakao] 프로필:', profile);
 
         // 3단계: 백엔드로 카카오 토큰 전달 → 서버 JWT 수신
         try {
           const authData = await loginWithKakao({
             accessToken: kakaoResult.accessToken,
-            kakaoUserId: String(profile.id),
           });
-          console.log('[Backend] JWT 수신 완료');
+          console.log('[Backend] 응답:', JSON.stringify(authData));
           Alert.alert(
             '로그인 성공!',
-            `환영합니다, ${authData.user.nickname}님!`,
+            `로그인되었습니다!`,
             [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
           );
         } catch (backendErr: any) {
           // 백엔드 미연동 상태 — 카카오 인증만으로 진행
           console.warn('[Backend] 미연동:', backendErr.message);
+          const displayName = profile.nickname || (profile as any).email || '사용자';
           Alert.alert(
             '카카오 로그인 성공!',
-            `환영합니다, ${profile.nickname}님!`,
+            `환영합니다, ${displayName}님!`,
             [{ text: '확인', onPress: () => navigation.replace('MainTabs') }]
           );
         }

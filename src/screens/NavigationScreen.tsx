@@ -7,7 +7,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 
 export default function NavigationScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList, 'Safety'>>();
   const [signalCount, setSignalCount] = useState(12);
 
   useEffect(() => {
@@ -20,8 +20,8 @@ export default function NavigationScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Pressable style={styles.avatar} onPress={() => nav.navigate('Profile')}>
-            <Text style={styles.avatarText}>Y</Text>
+          <Pressable style={styles.avatar} onPress={() => nav.goBack()}>
+            <Ionicons name="chevron-back" size={18} color={Colors.primary} />
           </Pressable>
           <Text style={styles.headerTitle}>Serene Walk</Text>
         </View>

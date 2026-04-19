@@ -25,9 +25,9 @@ export default function SavedScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Pressable style={styles.avatar} onPress={() => nav.navigate('Profile')}>
+          <View style={styles.avatar}>
             <Text style={styles.avatarText}>Y</Text>
-          </Pressable>
+          </View>
           <Text style={styles.headerTitle}>Serene Walk</Text>
         </View>
         <Pressable><Ionicons name="search" size={18} color={Colors.textSecondary} /></Pressable>
