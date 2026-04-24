@@ -35,6 +35,12 @@
           "kakaoAppKey": "2df86060c0a0594b4821f201b8f4ce95"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "80c3e142-57d4-49ec-b5a6-a81f400f15c7"
+      }
+    },
+    "owner": "noit0411"
   }
 }
