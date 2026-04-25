@@ -41,10 +41,6 @@ npm install
 sdk.dir=C\:\\Users\\본인계정\\AppData\\Local\\Android\\Sdk
 ```
 
-**Mac/Linux:**
-```
-sdk.dir=/Users/본인계정/Library/Android/sdk
-```
 
 > Android Studio → SDK Manager → Android SDK Location 에서 경로 확인 가능
 

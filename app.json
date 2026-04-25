@@ -34,7 +34,8 @@
         {
           "kakaoAppKey": "2df86060c0a0594b4821f201b8f4ce95"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {
