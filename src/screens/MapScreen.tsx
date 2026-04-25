@@ -11,11 +11,12 @@ import type { RootStackParamList } from '../navigation/AppNavigator';
 import WebView from 'react-native-webview';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import {
   formatRemainingTime, formatArrivalTime, formatDistance, searchRoute,
 } from '../api/routeApi';
 import type { RouteResponse, NavStep } from '../api/routeApi';
-import { findDemoRoute } from '../data/demoRoutes';
+import { findDemoRouteData } from '../data/demoRoutes';
 
 function decodePolyline(encoded: string): [number, number][] {
   const coords: [number, number][] = [];
@@ -81,6 +82,24 @@ const kakaoMapHtml = `
     };
 
     var signalOverlays = [];
+    var firstSignalOverlay = null;
+
+    function makeSignalContent(color) {
+      return '<div style="background:' + color + ';width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>';
+    }
+
+    window.setFirstSignal = function(lat, lng, color) {
+      if (firstSignalOverlay) firstSignalOverlay.setMap(null);
+      var pos = new kakao.maps.LatLng(lat, lng);
+      firstSignalOverlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
+      firstSignalOverlay.setMap(map);
+    };
+
+    window.updateFirstSignal = function(color) {
+      if (!firstSignalOverlay) return;
+      firstSignalOverlay.setContent(makeSignalContent(color));
+    };
+
     window.showSignalMarkers = function(signalsJson) {
       signalOverlays.forEach(function(o) { o.setMap(null); });
       signalOverlays = [];
@@ -88,8 +107,7 @@ const kakaoMapHtml = `
       signals.forEach(function(s) {
         var pos = new kakao.maps.LatLng(s.lat, s.lng);
         var color = s.state === 'GREEN' ? '#22c55e' : '#ef4444';
-        var content = '<div style="background:' + color + ';width:22px;height:22px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:11px;">🚦</div>';
-        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: content, yAnchor: 1 });
+        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
         overlay.setMap(map);
         signalOverlays.push(overlay);
       });
@@ -105,6 +123,7 @@ type PlaceResult = { id: string; name: string; address: string; lat: string; lng
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const [routeData, setRouteData] = useState<RouteResponse | null>(null);
@@ -124,7 +143,10 @@ export default function MapScreen() {
   const [selectedDest, setSelectedDest] = useState<PlaceResult | null>(null);
   const [routeSteps, setRouteSteps] = useState<NavStep[]>([]);
   const [elapsed, setElapsed] = useState(0);
+  const [firstSignalDistanceMeters, setFirstSignalDistanceMeters] = useState<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const SIGNAL_CYCLE = 15;
 
   useEffect(() => {
     (async () => {
@@ -143,6 +165,19 @@ export default function MapScreen() {
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [routeData]);
+
+  // 신호 phase 변경 시 지도 마커 색상 업데이트
+  const firstSignal = routeData?.signalCheckpoints[0] ?? null;
+  const firstStartsRed = firstSignal?.signalState === 'RED';
+  const phase = Math.floor(elapsed / SIGNAL_CYCLE) % 2;
+  const isCurrentlyRed = firstStartsRed ? phase === 0 : phase === 1;
+  const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
+
+  useEffect(() => {
+    if (!firstSignal) return;
+    const color = isCurrentlyRed ? '#ef4444' : '#22c55e';
+    webviewRef.current?.injectJavaScript(`window.updateFirstSignal(${JSON.stringify(color)}); true;`);
+  }, [phase]);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -201,15 +236,22 @@ export default function MapScreen() {
     setActiveField('dest');
   };
 
-  const applyRoute = (route: RouteResponse) => {
+  const applyRoute = (route: RouteResponse, signalDist = 0) => {
     const coordinates = decodePolyline(route.polyline);
     setRouteData(route);
     setRouteSteps([]);
+    setFirstSignalDistanceMeters(signalDist);
     setSheetExpanded(true);
     webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
     if (route.signalCheckpoints.length > 0) {
-      const signals = route.signalCheckpoints.map(c => ({ lat: c.lat, lng: c.lng, state: c.signalState }));
-      webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(signals))}); true;`);
+      const first = route.signalCheckpoints[0];
+      const rest  = route.signalCheckpoints.slice(1);
+      const firstColor = first.signalState === 'RED' ? '#ef4444' : '#22c55e';
+      webviewRef.current?.injectJavaScript(`window.setFirstSignal(${first.lat}, ${first.lng}, ${JSON.stringify(firstColor)}); true;`);
+      if (rest.length > 0) {
+        const others = rest.map(c => ({ lat: c.lat, lng: c.lng, state: c.signalState }));
+        webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(others))}); true;`);
+      }
     }
   };
 
@@ -226,15 +268,15 @@ export default function MapScreen() {
     closeSearchModal();
     setIsLoadingRoute(true);
     try {
-      const demo = findDemoRoute(originName, selectedDest.name);
-      const route = demo ?? await searchRoute({
+      const demoData = findDemoRouteData(originName, selectedDest.name);
+      const route = demoData?.route ?? await searchRoute({
         origin: { lat: originLat, lng: originLng },
         destination: { lat: destLat, lng: destLng },
         originName,
         destinationName: selectedDest.name,
         mode: 'BALANCED',
       });
-      applyRoute(route);
+      applyRoute(route, demoData?.firstSignalDistanceMeters ?? 0);
     } catch (e: any) {
       Alert.alert('경로 탐색 실패', e.message ?? String(e));
     } finally {
@@ -266,15 +308,15 @@ export default function MapScreen() {
     if (!originLat || !originLng) return;
     setIsLoadingRoute(true);
     try {
-      const demo = findDemoRoute(originName, destination.name);
-      const route = demo ?? await searchRoute({
+      const demoData = findDemoRouteData(originName, destination.name);
+      const route = demoData?.route ?? await searchRoute({
         origin: { lat: originLat, lng: originLng },
         destination: { lat: destination.lat, lng: destination.lng },
         originName,
         destinationName: destination.name,
         mode: 'BALANCED',
       });
-      applyRoute(route);
+      applyRoute(route, demoData?.firstSignalDistanceMeters ?? 0);
     } catch (e: any) {
       Alert.alert('경로 탐색 실패', e.message ?? String(e));
     } finally {
@@ -444,14 +486,12 @@ export default function MapScreen() {
       {routeData && (() => {
         const time = formatRemainingTime(routeData.totalTimeSeconds);
         const distanceStr = formatDistance(routeData.totalDistanceMeters);
-        const nextSignal = routeData.signalCheckpoints.find(c => c.etaFromStartSeconds > elapsed);
-        const countdown = nextSignal ? Math.max(0, nextSignal.etaFromStartSeconds - elapsed) : null;
-        const isRed = nextSignal?.signalState === 'RED';
-        const paceMsg =
-          nextSignal?.recommendedPace === 'SPEED_UP' ? '빠르게 걸어가세요' :
-          nextSignal?.recommendedPace === 'SLOW_DOWN' ? '천천히 걸어가세요' : '보통 속도로 걸어가세요';
+        const distText = firstSignalDistanceMeters > 0 ? `${firstSignalDistanceMeters}m 앞` : '전방';
+        const signalMsg = isCurrentlyRed
+          ? `빠르게 걸으면 초록불에 통과할 수 있어요`
+          : `지금 출발하면 신호에 걸리지 않아요`;
         return (
-          <View style={[styles.sheet, !sheetExpanded && { transform: [{ translateY: 260 }] }]}>
+          <View style={[styles.sheet, !sheetExpanded && { transform: [{ translateY: 260 }] }, { paddingBottom: 32 + insets.bottom + tabBarHeight }]}>
             <Pressable style={styles.sheetHandle} onPress={() => setSheetExpanded(!sheetExpanded)} />
             <View style={styles.navSummary}>
               <View>
@@ -465,19 +505,16 @@ export default function MapScreen() {
             </View>
 
             {/* 신호등 카드 */}
-            {nextSignal ? (
-              <View style={[styles.signalCard, { borderColor: isRed ? '#ef4444' : '#22c55e' }]}>
-                <View style={[styles.signalDot, { backgroundColor: isRed ? '#ef4444' : '#22c55e' }]} />
+            {firstSignal && (
+              <View style={[styles.signalCard, { borderColor: isCurrentlyRed ? '#ef4444' : '#22c55e' }]}>
+                <View style={[styles.signalDot, { backgroundColor: isCurrentlyRed ? '#ef4444' : '#22c55e' }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.signalTitle}>
-                    {isRed ? '🔴 빨간불' : '🟢 초록불'} <Text style={styles.signalCountdown}>{countdown}초 후</Text>
+                    {isCurrentlyRed ? '🔴 빨간불' : '🟢 초록불'}
+                    {'  '}<Text style={styles.signalCountdown}>{distText} · {signalCountdown}초 후 전환</Text>
                   </Text>
-                  <Text style={styles.signalPace}>{paceMsg}</Text>
+                  <Text style={styles.signalPace}>{signalMsg}</Text>
                 </View>
-              </View>
-            ) : (
-              <View style={[styles.signalCard, { borderColor: '#d1d5db' }]}>
-                <Text style={styles.signalPace}>✅ 남은 신호등 없음</Text>
               </View>
             )}
 
