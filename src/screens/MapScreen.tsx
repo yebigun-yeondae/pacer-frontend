@@ -15,6 +15,7 @@ import {
   formatRemainingTime, formatArrivalTime, formatDistance, searchRoute,
 } from '../api/routeApi';
 import type { RouteResponse, NavStep } from '../api/routeApi';
+import { findDemoRoute } from '../data/demoRoutes';
 
 function decodePolyline(encoded: string): [number, number][] {
   const coords: [number, number][] = [];
@@ -78,6 +79,21 @@ const kakaoMapHtml = `
       path.forEach(function(p) { bounds.extend(p); });
       map.setBounds(bounds);
     };
+
+    var signalOverlays = [];
+    window.showSignalMarkers = function(signalsJson) {
+      signalOverlays.forEach(function(o) { o.setMap(null); });
+      signalOverlays = [];
+      var signals = JSON.parse(signalsJson);
+      signals.forEach(function(s) {
+        var pos = new kakao.maps.LatLng(s.lat, s.lng);
+        var color = s.state === 'GREEN' ? '#22c55e' : '#ef4444';
+        var content = '<div style="background:' + color + ';width:22px;height:22px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:11px;">🚦</div>';
+        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: content, yAnchor: 1 });
+        overlay.setMap(map);
+        signalOverlays.push(overlay);
+      });
+    };
 </script>
 </body>
 </html>
@@ -107,6 +123,8 @@ export default function MapScreen() {
   const [selectedOrigin, setSelectedOrigin] = useState<PlaceResult | null>(null);
   const [selectedDest, setSelectedDest] = useState<PlaceResult | null>(null);
   const [routeSteps, setRouteSteps] = useState<NavStep[]>([]);
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -116,6 +134,15 @@ export default function MapScreen() {
       setInitialLocation(pos.coords);
     })();
   }, []);
+
+  useEffect(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (routeData) {
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [routeData]);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -174,6 +201,18 @@ export default function MapScreen() {
     setActiveField('dest');
   };
 
+  const applyRoute = (route: RouteResponse) => {
+    const coordinates = decodePolyline(route.polyline);
+    setRouteData(route);
+    setRouteSteps([]);
+    setSheetExpanded(true);
+    webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
+    if (route.signalCheckpoints.length > 0) {
+      const signals = route.signalCheckpoints.map(c => ({ lat: c.lat, lng: c.lng, state: c.signalState }));
+      webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(signals))}); true;`);
+    }
+  };
+
   const handleConfirmDestination = async () => {
     if (!selectedDest) return;
     const destLat = parseFloat(selectedDest.lat);
@@ -187,18 +226,15 @@ export default function MapScreen() {
     closeSearchModal();
     setIsLoadingRoute(true);
     try {
-      const route = await searchRoute({
+      const demo = findDemoRoute(originName, selectedDest.name);
+      const route = demo ?? await searchRoute({
         origin: { lat: originLat, lng: originLng },
         destination: { lat: destLat, lng: destLng },
         originName,
         destinationName: selectedDest.name,
         mode: 'BALANCED',
       });
-      const coordinates = decodePolyline(route.polyline);
-      setRouteData(route);
-      setRouteSteps([]);
-      setSheetExpanded(true);
-      webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
+      applyRoute(route);
     } catch (e: any) {
       Alert.alert('경로 탐색 실패', e.message ?? String(e));
     } finally {
@@ -226,21 +262,19 @@ export default function MapScreen() {
     if (!destination) return;
     const originLat = origin ? origin.lat : initialLocation?.latitude;
     const originLng = origin ? origin.lng : initialLocation?.longitude;
+    const originName = origin?.name ?? '현재 위치';
     if (!originLat || !originLng) return;
     setIsLoadingRoute(true);
     try {
-      const route = await searchRoute({
+      const demo = findDemoRoute(originName, destination.name);
+      const route = demo ?? await searchRoute({
         origin: { lat: originLat, lng: originLng },
         destination: { lat: destination.lat, lng: destination.lng },
-        originName: origin?.name ?? '현재 위치',
+        originName,
         destinationName: destination.name,
         mode: 'BALANCED',
       });
-      const coordinates = decodePolyline(route.polyline);
-      setRouteData(route);
-      setRouteSteps([]);
-      setSheetExpanded(true);
-      webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
+      applyRoute(route);
     } catch (e: any) {
       Alert.alert('경로 탐색 실패', e.message ?? String(e));
     } finally {
@@ -410,6 +444,12 @@ export default function MapScreen() {
       {routeData && (() => {
         const time = formatRemainingTime(routeData.totalTimeSeconds);
         const distanceStr = formatDistance(routeData.totalDistanceMeters);
+        const nextSignal = routeData.signalCheckpoints.find(c => c.etaFromStartSeconds > elapsed);
+        const countdown = nextSignal ? Math.max(0, nextSignal.etaFromStartSeconds - elapsed) : null;
+        const isRed = nextSignal?.signalState === 'RED';
+        const paceMsg =
+          nextSignal?.recommendedPace === 'SPEED_UP' ? '빠르게 걸어가세요' :
+          nextSignal?.recommendedPace === 'SLOW_DOWN' ? '천천히 걸어가세요' : '보통 속도로 걸어가세요';
         return (
           <View style={[styles.sheet, !sheetExpanded && { transform: [{ translateY: 260 }] }]}>
             <Pressable style={styles.sheetHandle} onPress={() => setSheetExpanded(!sheetExpanded)} />
@@ -423,6 +463,24 @@ export default function MapScreen() {
                 <Text style={styles.arrivalText}>{formatArrivalTime(routeData.totalTimeSeconds)}</Text>
               </View>
             </View>
+
+            {/* 신호등 카드 */}
+            {nextSignal ? (
+              <View style={[styles.signalCard, { borderColor: isRed ? '#ef4444' : '#22c55e' }]}>
+                <View style={[styles.signalDot, { backgroundColor: isRed ? '#ef4444' : '#22c55e' }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.signalTitle}>
+                    {isRed ? '🔴 빨간불' : '🟢 초록불'} <Text style={styles.signalCountdown}>{countdown}초 후</Text>
+                  </Text>
+                  <Text style={styles.signalPace}>{paceMsg}</Text>
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.signalCard, { borderColor: '#d1d5db' }]}>
+                <Text style={styles.signalPace}>✅ 남은 신호등 없음</Text>
+              </View>
+            )}
+
             <View style={styles.statsRow}>
               <View style={styles.statCard}>
                 <View style={styles.statHeader}>
@@ -444,7 +502,7 @@ export default function MapScreen() {
               onPress={() => nav.navigate('Safety', {
                 routeData,
                 destinationName: destination?.name ?? '',
-                originName: '현재 위치',
+                originName: origin?.name ?? '현재 위치',
                 steps: routeSteps,
               })}
             >
@@ -571,4 +629,14 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 8,
   },
   searchBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+
+  signalCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    borderWidth: 1.5, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12,
+    marginBottom: 16, backgroundColor: '#fafafa',
+  },
+  signalDot: { width: 12, height: 12, borderRadius: 6 },
+  signalTitle: { fontSize: 14, fontWeight: '600', color: Colors.textPrimary, marginBottom: 2 },
+  signalCountdown: { fontSize: 14, fontWeight: '700', color: Colors.primary },
+  signalPace: { fontSize: 12, color: Colors.textSecondary },
 });
