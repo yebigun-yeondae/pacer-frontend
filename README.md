@@ -41,8 +41,27 @@ npm install
 sdk.dir=C\:\\Users\\본인계정\\AppData\\Local\\Android\\Sdk
 ```
 
-
 > Android Studio → SDK Manager → Android SDK Location 에서 경로 확인 가능
+
+---
+
+### 4. AndroidManifest.xml HTTP 통신 허용 설정
+
+> **Release APK 빌드 시 필수.** 이 설정이 없으면 카카오 로그인 및 백엔드 연결이 `network request failed`로 실패합니다.
+
+`android/app/src/main/AndroidManifest.xml` 에서 `<application` 태그에 아래 속성을 추가합니다.
+
+```xml
+<application
+  ...
+  android:usesCleartextTraffic="true">
+```
+
+추가 후 전체 모습:
+
+```xml
+<application android:name=".MainApplication" android:label="@string/app_name" ... android:usesCleartextTraffic="true">
+```
 
 ---
 
