@@ -30,6 +30,21 @@ export default function NavigationScreen() {
 
   const steps: NavStep[] = params?.steps ?? [];
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
+
+  const SIGNAL_CYCLE = 15;
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const firstSignal = params?.routeData?.signalCheckpoints?.[0] ?? null;
+  const firstStartsRed = firstSignal?.signalState === 'RED';
+  const phase = Math.floor(elapsed / SIGNAL_CYCLE) % 2;
+  const isCurrentlyRed = firstStartsRed ? phase === 0 : phase === 1;
+  const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
+
+  useEffect(() => {
+    if (!firstSignal) return;
+    timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, []);
   const currentStepIdxRef = useRef(0);
   const currentStep = steps[currentStepIdx] ?? null;
   const upcomingSteps = steps.slice(currentStepIdx + 1);
@@ -94,6 +109,22 @@ export default function NavigationScreen() {
           <Text style={styles.destName}>{destinationName}</Text>
           <Text style={styles.destDetail}>잔여 거리 {distance} · {timeLabel}</Text>
         </View>
+
+        {/* 신호등 카드 */}
+        {firstSignal && (
+          <View style={[styles.signalCard, { borderColor: isCurrentlyRed ? '#ef4444' : '#22c55e' }]}>
+            <View style={[styles.signalDot, { backgroundColor: isCurrentlyRed ? '#ef4444' : '#22c55e' }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.signalTitle}>
+                {isCurrentlyRed ? '🔴 빨간불' : '🟢 초록불'}
+                {'  '}<Text style={styles.signalCountdown}>{signalCountdown}초 후 전환</Text>
+              </Text>
+              <Text style={styles.signalDesc}>
+                {isCurrentlyRed ? '빠르게 걸으면 초록불에 통과할 수 있어요' : '지금 출발하면 신호에 걸리지 않아요'}
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Current Step Card */}
         {currentStep ? (
@@ -206,4 +237,14 @@ const styles = StyleSheet.create({
   upcomingInstruction: { fontSize: 14, fontWeight: '500', color: Colors.textPrimary },
   upcomingStreet: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
   upcomingDist: { fontSize: 12, color: Colors.primary, fontWeight: '600' },
+
+  signalCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    borderWidth: 1.5, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 14,
+    backgroundColor: '#fafafa',
+  },
+  signalDot: { width: 14, height: 14, borderRadius: 7 },
+  signalTitle: { fontSize: 15, fontWeight: '700', color: '#1a1a1a', marginBottom: 4 },
+  signalCountdown: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  signalDesc: { fontSize: 13, color: '#666' },
 });

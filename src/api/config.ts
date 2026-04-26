@@ -1,5 +1,4 @@
-// 백엔드 서버 URL — 백엔드 친구가 서버 올리면 여기 URL만 교체하면 됨
-export const BASE_URL = 'http://43.200.94.130:8080';
+const BASE_URL = process.env.EXPO_PUBLIC_BASE_URL!;
 
 export const API = {
   auth: {
