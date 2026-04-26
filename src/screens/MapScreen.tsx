@@ -82,23 +82,10 @@ const kakaoMapHtml = `
     };
 
     var signalOverlays = [];
-    var firstSignalOverlay = null;
 
     function makeSignalContent(color) {
       return '<div style="background:' + color + ';width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>';
     }
-
-    window.setFirstSignal = function(lat, lng, color) {
-      if (firstSignalOverlay) firstSignalOverlay.setMap(null);
-      var pos = new kakao.maps.LatLng(lat, lng);
-      firstSignalOverlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
-      firstSignalOverlay.setMap(map);
-    };
-
-    window.updateFirstSignal = function(color) {
-      if (!firstSignalOverlay) return;
-      firstSignalOverlay.setContent(makeSignalContent(color));
-    };
 
     window.showSignalMarkers = function(signalsJson) {
       signalOverlays.forEach(function(o) { o.setMap(null); });
@@ -106,8 +93,7 @@ const kakaoMapHtml = `
       var signals = JSON.parse(signalsJson);
       signals.forEach(function(s) {
         var pos = new kakao.maps.LatLng(s.lat, s.lng);
-        var color = s.state === 'GREEN' ? '#22c55e' : '#ef4444';
-        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
+        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(s.color), yAnchor: 1 });
         overlay.setMap(map);
         signalOverlays.push(overlay);
       });
@@ -174,9 +160,13 @@ export default function MapScreen() {
   const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
 
   useEffect(() => {
-    if (!firstSignal) return;
-    const color = isCurrentlyRed ? '#ef4444' : '#22c55e';
-    webviewRef.current?.injectJavaScript(`window.updateFirstSignal(${JSON.stringify(color)}); true;`);
+    if (!routeData || routeData.signalCheckpoints.length === 0) return;
+    const signals = routeData.signalCheckpoints.map(c => {
+      const startsRed = c.signalState === 'RED';
+      const isRed = startsRed ? phase === 0 : phase === 1;
+      return { lat: c.lat, lng: c.lng, color: isRed ? '#ef4444' : '#22c55e' };
+    });
+    webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(signals))}); true;`);
   }, [phase]);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -244,14 +234,12 @@ export default function MapScreen() {
     setSheetExpanded(true);
     webviewRef.current?.injectJavaScript(`window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`);
     if (route.signalCheckpoints.length > 0) {
-      const first = route.signalCheckpoints[0];
-      const rest  = route.signalCheckpoints.slice(1);
-      const firstColor = first.signalState === 'RED' ? '#ef4444' : '#22c55e';
-      webviewRef.current?.injectJavaScript(`window.setFirstSignal(${first.lat}, ${first.lng}, ${JSON.stringify(firstColor)}); true;`);
-      if (rest.length > 0) {
-        const others = rest.map(c => ({ lat: c.lat, lng: c.lng, state: c.signalState }));
-        webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(others))}); true;`);
-      }
+      const signals = route.signalCheckpoints.map(c => ({
+        lat: c.lat,
+        lng: c.lng,
+        color: c.signalState === 'RED' ? '#ef4444' : '#22c55e',
+      }));
+      webviewRef.current?.injectJavaScript(`window.showSignalMarkers(${JSON.stringify(JSON.stringify(signals))}); true;`);
     }
   };
 
@@ -492,7 +480,7 @@ export default function MapScreen() {
           : `지금 출발하면 신호에 걸리지 않아요`;
         return (
           <View style={[styles.sheet, !sheetExpanded && { transform: [{ translateY: 260 }] }, { paddingBottom: 32 + insets.bottom + tabBarHeight }]}>
-            <Pressable style={styles.sheetHandle} onPress={() => setSheetExpanded(!sheetExpanded)} />
+            <Pressable style={styles.sheetHandle} onPress={() => setSheetExpanded(!sheetExpanded)} hitSlop={{ top: 20, bottom: 20, left: 60, right: 60 }} />
             <View style={styles.navSummary}>
               <View>
                 <Text style={styles.timeLabel}>남은 도착 시간</Text>
