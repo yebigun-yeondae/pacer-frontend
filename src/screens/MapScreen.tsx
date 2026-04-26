@@ -33,8 +33,8 @@ function decodePolyline(encoded: string): [number, number][] {
   return coords;
 }
 
-const KAKAO_JS_KEY = 'a05f5eb0d7f2daf71afbbd5762eda83e';
-const KAKAO_REST_KEY = 'e8fddbe461ffc538f65892ce98f4908f';
+const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY!;
+const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY!;
 
 const kakaoMapHtml = `
 <!DOCTYPE html>
