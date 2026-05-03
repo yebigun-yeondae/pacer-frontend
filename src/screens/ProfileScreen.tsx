@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Alert, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { getProfile, ProfileResponse } from '../api/profileApi';
 import { logoutFromServer } from '../api/authApi';
+import { storage } from '../utils/storage'; // TODO: 배포 전 삭제 (테스트 버튼 제거 시 함께 삭제)
 
 export default function ProfileScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -16,9 +17,21 @@ export default function ProfileScreen() {
   const [stride, setStride] = useState('65');
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
 
-  useEffect(() => {
-    getProfile().then(setProfile).catch(() => {});
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      getProfile().then(setProfile).catch(() => {});
+    }, [])
+  );
+
+  // TODO: 배포 전 삭제 — handleTokenExpireTest 함수 전체 제거
+  const handleTokenExpireTest = async () => {
+    await storage.saveToken('expired_token_test');
+    Alert.alert(
+      '🧪 토큰 만료 시뮬레이션',
+      'accessToken을 무효화했습니다.\n프로필 탭을 벗어났다가 다시 진입하면 Metro 로그에서 refresh token 동작을 확인할 수 있습니다.',
+      [{ text: '확인' }]
+    );
+  };
 
   const handleLogout = () => {
     Alert.alert('로그아웃', '정말 로그아웃하시겠습니까?', [
@@ -140,6 +153,12 @@ export default function ProfileScreen() {
           </Pressable>
         </View>
 
+        {/* TODO: 배포 전 삭제 — 테스트 버튼 전체 제거 (testBtn 스타일도 함께) */}
+        <Pressable style={({ pressed }) => [styles.testBtn, pressed && { opacity: 0.8 }]} onPress={handleTokenExpireTest}>
+          <Ionicons name="flask-outline" size={18} color={Colors.primary} />
+          <Text style={styles.testBtnText}>🧪 토큰 만료 시뮬레이션</Text>
+        </Pressable>
+
         {/* Logout */}
         <Pressable style={({ pressed }) => [styles.logoutBtn, pressed && { opacity: 0.8 }]} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={18} color={Colors.textDanger} />
@@ -213,6 +232,13 @@ const styles = StyleSheet.create({
   inputWrap: { position: 'relative' },
   input: { backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.textPrimary },
   inputSuffix: { position: 'absolute', right: 16, top: 16, fontSize: 14, color: '#797b78' },
+
+  testBtn: {
+    backgroundColor: 'rgba(81,100,82,0.08)', borderRadius: 16, borderWidth: 1, borderColor: Colors.primaryLight,
+    paddingVertical: 16, flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 8,
+  },
+  testBtnText: { fontSize: 16, color: Colors.primary },
 
   logoutBtn: {
     backgroundColor: 'rgba(253,121,90,0.1)', borderRadius: 16,

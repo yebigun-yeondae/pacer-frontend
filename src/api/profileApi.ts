@@ -1,5 +1,5 @@
 import { API } from './config';
-import { storage } from '../utils/storage';
+import { fetchWithAuth } from './fetchWithAuth';
 
 export interface ProfileResponse {
   nickname: string;
@@ -11,11 +11,7 @@ export interface ProfileResponse {
 }
 
 export async function getProfile(): Promise<ProfileResponse> {
-  const token = await storage.getToken();
-  const res = await fetch(API.profile.get, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetchWithAuth(API.profile.get, { method: 'GET' });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
