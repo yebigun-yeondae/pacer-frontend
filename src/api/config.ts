@@ -10,6 +10,11 @@ export const API = {
     get: `${BASE_URL}/api/v1/profile`, // GET — 프로필 조회
   },
   routes: {
-    search: `${BASE_URL}/api/v1/routes`, // POST — 경로 탐색
+    search:  `${BASE_URL}/api/v1/routes`,         // POST — 경로 탐색
+    history: `${BASE_URL}/api/v1/routes/history`, // GET  — 경로 탐색 히스토리
+  },
+  favorites: {
+    list: `${BASE_URL}/api/v1/favorites`,          // GET  — 즐겨찾기 목록
+    save: `${BASE_URL}/api/v1/favorites`,          // POST — 즐겨찾기 저장
   },
 };

@@ -20,7 +20,11 @@ export type RootStackParamList = {
   Onboarding: undefined;
   Auth: undefined;
   MainTabs: undefined;
-  MapDetail: undefined;
+  MapDetail: {
+    destinationName?: string;
+    destinationLat?: number;
+    destinationLng?: number;
+  } | undefined;
   Safety:
     | {
         routeData: RouteResponse;
