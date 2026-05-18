@@ -54,7 +54,7 @@ function decodePolyline(encoded: string): [number, number][] {
       shift += 5;
     } while (b >= 0x20);
     lng += result & 1 ? ~(result >> 1) : result >> 1;
-    coords.push([lng / 1e5, lat / 1e5]);
+    coords.push([lng / 1e6, lat / 1e6]);
   }
   return coords;
 }
@@ -111,7 +111,18 @@ function findNearestIndex(
 }
 
 const DEVIATION_THRESHOLD_METERS = 40; // 경로에서 40m 이상 벗어나면 이탈로 판단
-const REROUTE_COOLDOWN_MS = 15000; // 재탐색 후 15초 이내 중복 실행 방지
+const REROUTE_COOLDOWN_MS = 15000;     // 재탐색 후 15초 이내 중복 실행 방지
+const NORMAL_SPEED_MS = 4800 / 3600;  // 4.8 km/h → m/s
+const FAST_SPEED_MS   = 5800 / 3600;  // 5.8 km/h (+1.0) → m/s
+
+// T초 후 신호 상태 예측 (true = 빨간불)
+function isRedAtTime(T: number, currentlyRed: boolean, countdown: number): boolean {
+  if (T <= countdown) return currentlyRed;
+  const timeAfter = T - countdown;
+  // countdown 이후 15초마다 색상 전환
+  const flipped = Math.floor(timeAfter / 15) % 2 === 0;
+  return flipped ? !currentlyRed : currentlyRed;
+}
 
 const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY!;
 const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY!;
@@ -153,25 +164,45 @@ const kakaoMapHtml = `
       signalOverlays.forEach(function(o) { o.setMap(null); });
       signalOverlays = [];
     };
-    window.drawRoute = function(coordsJson) {
-      var coords = JSON.parse(coordsJson);
-      var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
-      if (routePolyline) routePolyline.setMap(null);
-      routePolyline = new kakao.maps.Polyline({
-        path: path,
-        strokeWeight: 5,
-        strokeColor: '#516452',
-        strokeOpacity: 0.85,
-        strokeStyle: 'solid'
-      });
-      routePolyline.setMap(map);
-      var bounds = new kakao.maps.LatLngBounds();
-      path.forEach(function(p) { bounds.extend(p); });
-      // 바텀시트가 맵 하단을 가리므로 relayout 후 여백을 주어 전체 경로가 보이도록
-      map.relayout();
-      setTimeout(function() {
-        map.setBounds(bounds, 60, 60, 340, 60);
-      }, 100);
+    window.drawRoute = function(coordsJson, fitBounds) {
+      try {
+        var coords = JSON.parse(coordsJson);
+        if (!coords || coords.length < 2) {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'warn', msg: 'drawRoute: coords empty or too short, len=' + (coords ? coords.length : 0) })
+          );
+          return;
+        }
+        var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+        if (routePolyline) routePolyline.setMap(null);
+        routePolyline = new kakao.maps.Polyline({
+          path: path,
+          strokeWeight: 6,
+          strokeColor: '#516452',
+          strokeOpacity: 0.95,
+          strokeStyle: 'solid'
+        });
+        routePolyline.setMap(map);
+        window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+          JSON.stringify({ type: 'drawRoute', points: path.length, fitBounds: fitBounds })
+        );
+        // fitBounds !== false 일 때만 전체 경로가 보이도록 뷰 이동
+        if (fitBounds !== false) {
+          var bounds = new kakao.maps.LatLngBounds();
+          path.forEach(function(p) { bounds.extend(p); });
+          // relayout은 setBounds 직전에만 실행 (폴리라인 렌더 방해 방지)
+          setTimeout(function() {
+            map.relayout();
+            setTimeout(function() {
+              map.setBounds(bounds, 80, 40, 260, 40);
+            }, 150);
+          }, 100);
+        }
+      } catch(e) {
+        window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+          JSON.stringify({ type: 'error', msg: 'drawRoute exception: ' + String(e) })
+        );
+      }
     };
 
     var signalOverlays = [];
@@ -269,6 +300,15 @@ export default function MapScreen() {
     lng: number;
   } | null>(null);
   const lastNearestIdxRef = useRef<number>(0); // 경로 진행 표시 — 뒤로 가는 업데이트 방지
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+
+  // ── 경로 이탈 상태 머신 ────────────────────────────────────────────────
+  // hasEnteredRouteRef : 현재 경로 세션에서 한 번이라도 폴리라인 안에 들어왔는지
+  // isOnRouteRef       : 직전 GPS 업데이트에서 폴리라인 안이었는지 (전환 감지용)
+  // pendingEntryRef    : Alert 표시 후 경로 재진입 대기 중 (재진입 전까지 Alert 억제)
+  const hasEnteredRouteRef = useRef<boolean>(false);
+  const isOnRouteRef = useRef<boolean>(false);
+  const pendingEntryRef = useRef<boolean>(false);
 
   const SIGNAL_CYCLE = 15;
 
@@ -335,6 +375,39 @@ export default function MapScreen() {
   const isCurrentlyRed = firstStartsRed ? phase === 0 : phase === 1;
   const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
 
+  // ── 신호 통과 가능 여부 동적 계산 ────────────────────────────────────────
+  const signalPaceMsg = React.useMemo(() => {
+    if (!firstSignal) return null;
+
+    // 사용자가 폴리라인 위(10m 이내)일 때만 계산
+    const onPolyline =
+      userLocation !== null &&
+      routeCoords.length > 0 &&
+      distanceToRoute(userLocation.lat, userLocation.lng, routeCoords) <= 10;
+
+    if (!onPolyline || !userLocation) {
+      // 폴리라인 밖이거나 위치 미확인 → 기본 메시지
+      return isCurrentlyRed
+        ? '빠르게 걸으면 초록불에 통과할 수 있어요'
+        : '지금 출발하면 신호에 걸리지 않아요';
+    }
+
+    const dist = haversineMeters(userLocation.lat, userLocation.lng, firstSignal.lat, firstSignal.lng);
+    const etaNormal = dist / NORMAL_SPEED_MS; // 4.8 km/h 기준 도착 예상 시간(초)
+    const etaFast   = dist / FAST_SPEED_MS;  // 5.8 km/h 기준 도착 예상 시간(초)
+
+    const redAtNormal = isRedAtTime(etaNormal, isCurrentlyRed, signalCountdown);
+    const redAtFast   = isRedAtTime(etaFast,   isCurrentlyRed, signalCountdown);
+
+    if (!redAtNormal) {
+      return '현재 속도(4.8 km/h)로 걸으면 신호를 통과할 수 있어요';
+    } else if (!redAtFast) {
+      return '1.0 km/h 속도를 높이면 신호를 통과할 수 있어요';
+    } else {
+      return '이번 신호 통과가 어려워요. 잠시 기다리세요';
+    }
+  }, [firstSignal, userLocation, isCurrentlyRed, signalCountdown, routeCoords]);
+
   useEffect(() => {
     if (!firstSignal) return;
     const color = isCurrentlyRed ? "#ef4444" : "#22c55e";
@@ -359,66 +432,126 @@ export default function MapScreen() {
       if (status !== "granted") return;
 
       sub = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, distanceInterval: 10 },
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 1000,    // 최소 1초마다 업데이트
+          distanceInterval: 1,   // 최소 1m 이동 시 업데이트
+        },
         async (pos) => {
           const { latitude, longitude } = pos.coords;
+
+          // React state 업데이트 (신호 메시지 계산용)
+          setUserLocation({ lat: latitude, lng: longitude });
 
           // ── 현재 위치 마커 실시간 이동 ──────────────────────────────────
           webviewRef.current?.injectJavaScript(`
             (function() {
-              var pos = new kakao.maps.LatLng(${latitude}, ${longitude});
+              var latlng = new kakao.maps.LatLng(${latitude}, ${longitude});
               if (currentMarker) {
-                currentMarker.setPosition(pos);
+                currentMarker.setPosition(latlng);
               } else {
-                currentMarker = new kakao.maps.Marker({ map: map, position: pos });
+                currentMarker = new kakao.maps.Marker({ map: map, position: latlng });
               }
             })(); true;
           `);
 
-          // ── 경로 진행 표시 ──────────────────────────────────────────────
+          // ── 경로 진행 표시 (applyRoute와 동일한 직접 inject 방식) ────────
           const nearestIdx = findNearestIndex(latitude, longitude, routeCoords);
           if (nearestIdx > lastNearestIdxRef.current) {
             lastNearestIdxRef.current = nearestIdx;
             const remaining = routeCoords.slice(nearestIdx);
             if (remaining.length > 1) {
-              webviewRef.current?.injectJavaScript(
-                `window.drawRoute(${JSON.stringify(JSON.stringify(remaining))}); true;`,
-              );
+              webviewRef.current?.injectJavaScript(`
+                (function() {
+                  try {
+                    var coords = ${JSON.stringify(remaining)};
+                    var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+                    if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+                    routePolyline = new kakao.maps.Polyline({
+                      path: path,
+                      strokeWeight: 6,
+                      strokeColor: '#516452',
+                      strokeOpacity: 0.95,
+                      strokeStyle: 'solid'
+                    });
+                    routePolyline.setMap(map);
+                  } catch(e) {}
+                })(); true;
+              `);
             }
           }
 
-          // ── 이탈 감지 ───────────────────────────────────────────────────
+          // ── 이탈 감지 상태 머신 ─────────────────────────────────────────
           const dist = distanceToRoute(latitude, longitude, routeCoords);
           const now = Date.now();
+          const onRoute = dist <= DEVIATION_THRESHOLD_METERS;
 
-          if (
-            dist > DEVIATION_THRESHOLD_METERS &&
-            !isRerouting &&
-            now - lastRerouteRef.current > REROUTE_COOLDOWN_MS
-          ) {
-            const dest = destinationRef.current;
-            if (!dest) return;
-
-            setIsRerouting(true);
-            lastRerouteRef.current = now;
-
-            try {
-              const newRoute = await searchRoute({
-                origin: { lat: latitude, lng: longitude },
-                destination: { lat: dest.lat, lng: dest.lng },
-                originName: "현재 위치",
-                destinationName: dest.name,
-              });
-              applyRoute(newRoute);
-              Alert.alert(
-                "경로 재탐색",
-                "경로를 이탈하여 새로운 경로로 안내합니다.",
-              );
-            } catch {
-              // 재탐색 실패 시 조용히 유지
-            } finally {
-              setIsRerouting(false);
+          if (onRoute) {
+            // ── 경로 안 ──────────────────────────────────────────────────
+            if (!isOnRouteRef.current) {
+              // 경로에 (재)진입: 진입 대기 해제 + 진입 여부 기록
+              hasEnteredRouteRef.current = true;
+              pendingEntryRef.current = false;
             }
+            isOnRouteRef.current = true;
+          } else {
+            // ── 경로 밖 ──────────────────────────────────────────────────
+            // pendingEntry 상태(Alert 후 재진입 대기)이면 Alert 억제
+            // isRerouting 중이거나 쿨다운 중이어도 억제
+            const canAlert =
+              !pendingEntryRef.current &&
+              !isRerouting &&
+              now - lastRerouteRef.current > REROUTE_COOLDOWN_MS;
+
+            if (canAlert) {
+              // Alert 조건:
+              //   1) 경로에 있다가 이탈 (isOnRoute: true → false 전환)
+              //   2) 내비 시작 후 한 번도 경로에 진입하지 못함 (초기 위치 이탈)
+              const shouldAlert =
+                isOnRouteRef.current || !hasEnteredRouteRef.current;
+
+              if (shouldAlert) {
+                const dest = destinationRef.current;
+                if (dest) {
+                  pendingEntryRef.current = true; // 재진입 전까지 Alert 억제
+                  lastRerouteRef.current = now;
+
+                  Alert.alert(
+                    "경로 이탈",
+                    "경로를 이탈하였습니다.\n현재 내 위치로 다시 경로를 재탐색할까요?",
+                    [
+                      {
+                        text: "아니오",
+                        style: "cancel",
+                        // pendingEntryRef = true 유지 → 경로 재진입 전까지 Alert 없음
+                      },
+                      {
+                        text: "예",
+                        onPress: async () => {
+                          setIsRerouting(true);
+                          try {
+                            const newRoute = await searchRoute({
+                              origin: { lat: latitude, lng: longitude },
+                              destination: { lat: dest.lat, lng: dest.lng },
+                              originName: "현재 위치",
+                              destinationName: dest.name,
+                            });
+                            // applyRoute 내부에서 상태 머신 refs 초기화
+                            applyRoute(newRoute, false);
+                          } catch {
+                            // 재탐색 실패 시 조용히 기존 경로 유지
+                          } finally {
+                            setIsRerouting(false);
+                          }
+                        },
+                      },
+                    ],
+                  );
+                }
+              }
+            }
+
+            isOnRouteRef.current = false;
           }
         },
       );
@@ -496,16 +629,59 @@ export default function MapScreen() {
     setActiveField("dest");
   };
 
-  const applyRoute = (route: RouteResponse) => {
+  // fitBounds: 경로 탐색 완료 시 전체 경로가 보이도록 뷰 이동 여부
+  // 안내 중 재탐색(이탈 후 재탐색)에는 false를 전달해 사용자 뷰를 고정
+  const applyRoute = (route: RouteResponse, fitBounds = true) => {
     const coordinates = decodePolyline(route.polyline);
+    console.log('[applyRoute] coords:', coordinates.length, 'first:', coordinates[0]);
     setRouteData(route);
     setRouteCoords(coordinates); // 이탈 감지를 위해 저장
     lastNearestIdxRef.current = 0; // 새 경로 시작 시 진행 인덱스 초기화
+    // 새 경로가 적용될 때마다 이탈 상태 머신 초기화
+    hasEnteredRouteRef.current = false;
+    isOnRouteRef.current = false;
+    pendingEntryRef.current = false;
     setRouteSteps([]);
-    setSheetExpanded(true);
-    webviewRef.current?.injectJavaScript(
-      `window.drawRoute(${JSON.stringify(JSON.stringify(coordinates))}); true;`,
-    );
+    // 경로 탐색 완료 시 지도가 보이도록 시트를 접어둠 (핸들 클릭으로 펼칠 수 있음)
+    setSheetExpanded(false);
+
+    // window.drawRoute 함수 호출 대신 JS를 직접 inject
+    // (이중 직렬화 없이 좌표를 JSON 리터럴로 직접 전달 → 파싱 오류 방지)
+    webviewRef.current?.injectJavaScript(`
+      (function() {
+        try {
+          var coords = ${JSON.stringify(coordinates)};
+          var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+          if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+          routePolyline = new kakao.maps.Polyline({
+            path: path,
+            strokeWeight: 6,
+            strokeColor: '#516452',
+            strokeOpacity: 0.95,
+            strokeStyle: 'solid'
+          });
+          routePolyline.setMap(map);
+          ${fitBounds ? `
+          var bounds = new kakao.maps.LatLngBounds();
+          path.forEach(function(p) { bounds.extend(p); });
+          setTimeout(function() {
+            map.relayout();
+            setTimeout(function() {
+              map.setBounds(bounds, 80, 40, 260, 40);
+            }, 150);
+          }, 100);
+          ` : ''}
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'polyline', count: path.length })
+          );
+        } catch(e) {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'error', msg: String(e) })
+          );
+        }
+      })();
+      true;
+    `);
     if (route.signalCheckpoints.length > 0) {
       const first = route.signalCheckpoints[0];
       const rest = route.signalCheckpoints.slice(1);
@@ -530,14 +706,30 @@ export default function MapScreen() {
     if (!selectedDest) return;
     const destLat = parseFloat(selectedDest.lat);
     const destLng = parseFloat(selectedDest.lng);
-    const originLat = selectedOrigin
+
+    let originLat = selectedOrigin
       ? parseFloat(selectedOrigin.lat)
       : initialLocation?.latitude;
-    const originLng = selectedOrigin
+    let originLng = selectedOrigin
       ? parseFloat(selectedOrigin.lng)
       : initialLocation?.longitude;
     const originName = selectedOrigin?.name ?? "현재 위치";
-    if (!originLat || !originLng) return;
+
+    // initialLocation이 아직 없으면 (SavedScreen 등 외부에서 빠르게 넘어온 경우)
+    // 현재 위치를 즉시 요청해서 출발지로 사용
+    if (!originLat || !originLng) {
+      try {
+        const pos = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        originLat = pos.coords.latitude;
+        originLng = pos.coords.longitude;
+        setInitialLocation(pos.coords);
+      } catch {
+        Alert.alert("위치 오류", "현재 위치를 가져올 수 없습니다.\n출발지를 직접 입력해주세요.");
+        return;
+      }
+    }
     setDestination({ name: selectedDest.name, lat: destLat, lng: destLng });
     setOrigin(
       selectedOrigin
@@ -610,6 +802,12 @@ export default function MapScreen() {
           javaScriptEnabled
           domStorageEnabled
           onLoad={() => setMapLoaded(true)}
+          onMessage={(event) => {
+            try {
+              const data = JSON.parse(event.nativeEvent.data);
+              console.log('[KakaoMap]', JSON.stringify(data));
+            } catch {}
+          }}
         />
       </View>
 
@@ -839,22 +1037,31 @@ export default function MapScreen() {
             { bottom: insets.bottom + tabBarHeight + 16 },
           ]}
         >
-          <View style={styles.navFloatLeft}>
-            <Ionicons
-              name={isRerouting ? "refresh" : "navigate"}
-              size={18}
-              color={isRerouting ? Colors.brown : Colors.primary}
-            />
-            <View>
-              <Text style={styles.navFloatDest} numberOfLines={1}>
-                {isRerouting ? "경로 재탐색 중..." : destination?.name}
-              </Text>
-              <Text style={styles.navFloatInfo}>
-                {formatDistance(routeData.totalDistanceMeters)} ·{" "}
-                {formatRemainingTime(routeData.totalTimeSeconds).value}
-                {formatRemainingTime(routeData.totalTimeSeconds).unit}
-              </Text>
+          <View style={{ flex: 1, gap: 6 }}>
+            <View style={styles.navFloatLeft}>
+              <Ionicons
+                name={isRerouting ? "refresh" : "navigate"}
+                size={18}
+                color={isRerouting ? Colors.brown : Colors.primary}
+              />
+              <View>
+                <Text style={styles.navFloatDest} numberOfLines={1}>
+                  {isRerouting ? "경로 재탐색 중..." : destination?.name}
+                </Text>
+                <Text style={styles.navFloatInfo}>
+                  {formatDistance(routeData.totalDistanceMeters)} ·{" "}
+                  {formatRemainingTime(routeData.totalTimeSeconds).value}
+                  {formatRemainingTime(routeData.totalTimeSeconds).unit}
+                </Text>
+              </View>
             </View>
+            {/* 신호 통과 가능 여부 */}
+            {firstSignal && signalPaceMsg && (
+              <View style={styles.navSignalRow}>
+                <View style={[styles.navSignalDot, { backgroundColor: isCurrentlyRed ? "#ef4444" : "#22c55e" }]} />
+                <Text style={styles.navSignalText} numberOfLines={2}>{signalPaceMsg}</Text>
+              </View>
+            )}
           </View>
           <Pressable
             onPress={() => {
@@ -885,9 +1092,9 @@ export default function MapScreen() {
           const time = formatRemainingTime(routeData.totalTimeSeconds);
           const distanceStr = formatDistance(routeData.totalDistanceMeters);
           const distText = "전방";
-          const signalMsg = isCurrentlyRed
-            ? `빠르게 걸으면 초록불에 통과할 수 있어요`
-            : `지금 출발하면 신호에 걸리지 않아요`;
+          const signalMsg = signalPaceMsg ?? (isCurrentlyRed
+            ? '빠르게 걸으면 초록불에 통과할 수 있어요'
+            : '지금 출발하면 신호에 걸리지 않아요');
           return (
             <View
               style={[
@@ -974,16 +1181,26 @@ export default function MapScreen() {
                 ]}
                 onPress={() => {
                   setIsNavigating(true);
-                  const originLat = origin?.lat ?? initialLocation?.latitude;
-                  const originLng = origin?.lng ?? initialLocation?.longitude;
-                  if (originLat && originLng) {
-                    // 레이아웃 변경(바텀시트 사라짐) 후 지도가 터치 영역을 재계산하도록
-                    // relayout() + 드래그/줌 명시 활성화
-                    setTimeout(() => {
+                  // origin > GPS 현재 위치 > 경로 첫 좌표 순으로 fallback
+                  const originLat =
+                    origin?.lat ??
+                    initialLocation?.latitude ??
+                    (routeCoords.length > 0 ? routeCoords[0][1] : null);
+                  const originLng =
+                    origin?.lng ??
+                    initialLocation?.longitude ??
+                    (routeCoords.length > 0 ? routeCoords[0][0] : null);
+                  // 레이아웃 변경(바텀시트 사라짐) 후 지도가 터치 영역을 재계산하도록
+                  // relayout() + 드래그/줌 명시 활성화
+                  setTimeout(() => {
+                    if (originLat != null && originLng != null) {
                       webviewRef.current?.injectJavaScript(`
                         (function() {
-                          var pos = new kakao.maps.LatLng(${originLat}, ${originLng});
-                          map.setCenter(pos);
+                          var latlng = new kakao.maps.LatLng(${originLat}, ${originLng});
+                          // 현재 위치 마커 표시
+                          if (currentMarker) { currentMarker.setMap(null); }
+                          currentMarker = new kakao.maps.Marker({ map: map, position: latlng });
+                          map.setCenter(latlng);
                           map.setLevel(2);
                           map.relayout();
                           map.setDraggable(true);
@@ -991,12 +1208,45 @@ export default function MapScreen() {
                         })();
                         true;
                       `);
-                    }, 150);
-                  }
+                    } else {
+                      webviewRef.current?.injectJavaScript(`
+                        map.relayout();
+                        map.setDraggable(true);
+                        map.setZoomable(true);
+                        true;
+                      `);
+                    }
+                  }, 150);
                 }}
               >
                 <Text style={styles.endBtnText}>경로 안내 시작</Text>
                 <Ionicons name="navigate" size={16} color="#fff" />
+              </Pressable>
+
+              {/* 경로 취소 */}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.cancelBtn,
+                  pressed && { opacity: 0.6 },
+                ]}
+                onPress={() => {
+                  webviewRef.current?.injectJavaScript(`window.clearRoute(); true;`);
+                  setRouteData(null);
+                  setRouteCoords([]);
+                  setDestination(null);
+                  setOrigin(null);
+                  setSheetExpanded(false);
+                  // 출발지·목적지 초기화 후 검색 모달 다시 열기
+                  setOriginQuery("");
+                  setDestQuery("");
+                  setSelectedOrigin(null);
+                  setSelectedDest(null);
+                  setSearchResults([]);
+                  setActiveField("dest");
+                  setSearchVisible(true);
+                }}
+              >
+                <Text style={styles.cancelBtnText}>취소하기</Text>
               </Pressable>
             </View>
           );
@@ -1151,6 +1401,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   endBtnText: { fontSize: 16, fontWeight: "500", color: "#fff" },
+  cancelBtn: {
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  cancelBtnText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#ef4444",
+  },
 
   bottomCol: {
     position: "absolute",
@@ -1243,6 +1502,16 @@ const styles = StyleSheet.create({
     maxWidth: 220,
   },
   navFloatInfo: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  navSignalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: "#f0f0f0",
+  },
+  navSignalDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  navSignalText: { fontSize: 12, color: Colors.textPrimary, flex: 1, lineHeight: 16 },
 
   inputRow: {
     flexDirection: "row",

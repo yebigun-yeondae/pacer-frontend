@@ -7,7 +7,8 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { getProfile, ProfileResponse } from '../api/profileApi';
 import { logoutFromServer } from '../api/authApi';
-import { storage } from '../utils/storage'; // TODO: 배포 전 삭제 (테스트 버튼 제거 시 함께 삭제)
+import { storage } from '../utils/storage';
+import { API } from '../api/config';
 
 export default function ProfileScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -23,13 +24,53 @@ export default function ProfileScreen() {
     }, [])
   );
 
-  // TODO: 배포 전 삭제 — handleTokenExpireTest 함수 전체 제거
-  const handleTokenExpireTest = async () => {
-    await storage.saveToken('expired_token_test');
+  const handleWithdraw = () => {
+    // 1차 확인
     Alert.alert(
-      '🧪 토큰 만료 시뮬레이션',
-      'accessToken을 무효화했습니다.\n프로필 탭을 벗어났다가 다시 진입하면 Metro 로그에서 refresh token 동작을 확인할 수 있습니다.',
-      [{ text: '확인' }]
+      '회원 탈퇴',
+      '정말 탈퇴하시겠습니까?',
+      [
+        { text: '아니오', style: 'cancel' },
+        {
+          text: '예',
+          style: 'destructive',
+          onPress: () => {
+            // 2차 확인 — 데이터 보관 안내 포함
+            Alert.alert(
+              '탈퇴 전 안내',
+              '회원 탈퇴 시 서비스 이용 기록 및 개인정보는 관련 법령에 따라 5년간 보관된 후 삭제됩니다.\n\n정말 탈퇴하시겠습니까?',
+              [
+                { text: '아니오', style: 'cancel' },
+                {
+                  text: '예',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      const accessToken = await storage.getToken();
+                      const refreshToken = await storage.getRefreshToken();
+                      const res = await fetch(API.auth.withdraw, {
+                        method: 'DELETE',
+                        headers: {
+                          'Authorization': `Bearer ${accessToken}`,
+                          'Refresh-Token': refreshToken ?? '',
+                        },
+                      });
+                      if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error((err as any).message || `오류: ${res.status}`);
+                      }
+                      await storage.clear();
+                      nav.reset({ index: 0, routes: [{ name: 'Auth' }] });
+                    } catch (e: any) {
+                      Alert.alert('탈퇴 실패', e.message ?? '잠시 후 다시 시도해주세요.');
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
     );
   };
 
@@ -153,10 +194,10 @@ export default function ProfileScreen() {
           </Pressable>
         </View>
 
-        {/* TODO: 배포 전 삭제 — 테스트 버튼 전체 제거 (testBtn 스타일도 함께) */}
-        <Pressable style={({ pressed }) => [styles.testBtn, pressed && { opacity: 0.8 }]} onPress={handleTokenExpireTest}>
-          <Ionicons name="flask-outline" size={18} color={Colors.primary} />
-          <Text style={styles.testBtnText}>🧪 토큰 만료 시뮬레이션</Text>
+        {/* Withdraw */}
+        <Pressable style={({ pressed }) => [styles.withdrawBtn, pressed && { opacity: 0.8 }]} onPress={handleWithdraw}>
+          <Ionicons name="person-remove-outline" size={18} color="#ef4444" />
+          <Text style={styles.withdrawText}>회원 탈퇴</Text>
         </Pressable>
 
         {/* Logout */}
@@ -233,12 +274,12 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.textPrimary },
   inputSuffix: { position: 'absolute', right: 16, top: 16, fontSize: 14, color: '#797b78' },
 
-  testBtn: {
-    backgroundColor: 'rgba(81,100,82,0.08)', borderRadius: 16, borderWidth: 1, borderColor: Colors.primaryLight,
+  withdrawBtn: {
+    backgroundColor: 'rgba(239,68,68,0.07)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(239,68,68,0.2)',
     paddingVertical: 16, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'center', gap: 8,
   },
-  testBtnText: { fontSize: 16, color: Colors.primary },
+  withdrawText: { fontSize: 16, color: '#ef4444' },
 
   logoutBtn: {
     backgroundColor: 'rgba(253,121,90,0.1)', borderRadius: 16,

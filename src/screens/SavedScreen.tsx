@@ -190,12 +190,7 @@ export default function SavedScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>Y</Text>
-          </View>
-          <Text style={styles.headerTitle}>Serene Walk</Text>
-        </View>
+        <View />
         <Pressable><Ionicons name="search" size={18} color={Colors.textSecondary} /></Pressable>
       </View>
 
@@ -418,9 +413,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24, paddingTop: 56, paddingBottom: 16,
     backgroundColor: Colors.overlay,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.bgInput, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontSize: 16, fontWeight: '600', color: Colors.primary },
   headerTitle: { fontWeight: '700', fontSize: 20, color: Colors.primary, letterSpacing: 0.5 },
 
   content: { padding: 24, paddingBottom: 100, gap: 24 },

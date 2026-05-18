@@ -31,19 +31,7 @@ export default function AuthScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = () => {
-    if (!email.trim()) {
-      Alert.alert("", "이메일을 입력해주세요");
-      return;
-    }
-    if (password.length < 4) {
-      Alert.alert("", "비밀번호를 4자 이상 입력해주세요");
-      return;
-    }
-    if (!isLogin && password !== passwordConfirm) {
-      Alert.alert("", "비밀번호가 일치하지 않습니다");
-      return;
-    }
-    navigation.replace("MainTabs");
+    Alert.alert("준비 중", "현재 카카오 로그인만 지원합니다.");
   };
 
   const handleSocialLogin = async (provider: string) => {
@@ -72,13 +60,8 @@ export default function AuthScreen({ navigation }: Props) {
             { text: "확인", onPress: () => navigation.replace("MainTabs") },
           ]);
         } catch (backendErr: any) {
-          // 백엔드 미연동 상태 — 카카오 인증만으로 진행
-          console.warn("[Backend] 미연동:", backendErr.message);
-          const displayName =
-            profile.nickname || (profile as any).email || "사용자";
-          Alert.alert("카카오 로그인 성공!", `환영합니다, ${displayName}님!`, [
-            { text: "확인", onPress: () => navigation.replace("MainTabs") },
-          ]);
+          console.warn("[Backend] 로그인 실패:", backendErr.message);
+          Alert.alert("로그인 실패", "서버 인증에 실패했습니다. 잠시 후 다시 시도해주세요.");
         }
       } catch (err: any) {
         if (err.code !== "E_CANCELLED_OPERATION") {
