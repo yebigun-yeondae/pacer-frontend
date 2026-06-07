@@ -33,6 +33,7 @@ import type { RouteResponse, NavStep } from "../api/routeApi";
 import { navStatusStore } from "../utils/navStatus";
 import { fetchWithAuth } from "../api/fetchWithAuth";
 import { API } from "../api/config";
+import { getProfile } from "../api/profileApi";
 
 function decodePolyline(encoded: string): [number, number][] {
   const coords: [number, number][] = [];
@@ -115,15 +116,16 @@ function findNearestIndex(
 
 const DEVIATION_THRESHOLD_METERS = 40; // 경로에서 40m 이상 벗어나면 이탈로 판단
 const REROUTE_COOLDOWN_MS = 15000;     // 재탐색 후 15초 이내 중복 실행 방지
-const NORMAL_SPEED_MS = 4800 / 3600;  // 4.8 km/h → m/s
-const FAST_SPEED_MS   = 5800 / 3600;  // 5.8 km/h (+1.0) → m/s
+const SIGNAL_CYCLE = 15;               // 신호 주기(초) — isRedAtTime과 phase 계산에 공유
+const SPEED_BOOST_MPS = 1.0 / 3.6;    // 신호 통과 가능 여부 계산 시 추가 속도(1.0 km/h → m/s)
+const DEFAULT_SPEED_MPS = 4800 / 3600; // 프로필 로드 실패 시 기본 보행 속도(4.8 km/h)
 
 // T초 후 신호 상태 예측 (true = 빨간불)
 function isRedAtTime(T: number, currentlyRed: boolean, countdown: number): boolean {
   if (T <= countdown) return currentlyRed;
   const timeAfter = T - countdown;
-  // countdown 이후 15초마다 색상 전환
-  const flipped = Math.floor(timeAfter / 15) % 2 === 0;
+  // countdown 이후 SIGNAL_CYCLE초마다 색상 전환
+  const flipped = Math.floor(timeAfter / SIGNAL_CYCLE) % 2 === 0;
   return flipped ? !currentlyRed : currentlyRed;
 }
 
@@ -319,7 +321,13 @@ export default function MapScreen() {
   const navTotalDistRef   = useRef<number>(0);
   const navLastGpsPosRef  = useRef<{ lat: number; lng: number } | null>(null);
 
-  const SIGNAL_CYCLE = 15;
+  // ── 사용자 평균 보행 속도 (프로필 API, 실패 시 기본값 4.8 km/h) ──────────
+  const [avgSpeedMps, setAvgSpeedMps] = useState<number>(DEFAULT_SPEED_MPS);
+  useEffect(() => {
+    getProfile()
+      .then((p) => setAvgSpeedMps(p.avgSpeedMps))
+      .catch(() => {}); // 실패 시 DEFAULT_SPEED_MPS 유지
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -402,20 +410,20 @@ export default function MapScreen() {
     }
 
     const dist = haversineMeters(userLocation.lat, userLocation.lng, firstSignal.lat, firstSignal.lng);
-    const etaNormal = dist / NORMAL_SPEED_MS; // 4.8 km/h 기준 도착 예상 시간(초)
-    const etaFast   = dist / FAST_SPEED_MS;  // 5.8 km/h 기준 도착 예상 시간(초)
+    const etaNormal = dist / avgSpeedMps;                    // 사용자 실제 속도 기준
+    const etaFast   = dist / (avgSpeedMps + SPEED_BOOST_MPS); // +1.0 km/h 기준
 
     const redAtNormal = isRedAtTime(etaNormal, isCurrentlyRed, signalCountdown);
     const redAtFast   = isRedAtTime(etaFast,   isCurrentlyRed, signalCountdown);
 
     if (!redAtNormal) {
-      return '현재 속도(4.8 km/h)로 걸으면 신호를 통과할 수 있어요';
+      return `현재 속도(${(avgSpeedMps * 3.6).toFixed(1)} km/h)로 걸으면 신호를 통과할 수 있어요`;
     } else if (!redAtFast) {
-      return '1.0 km/h 속도를 높이면 신호를 통과할 수 있어요';
+      return `${(SPEED_BOOST_MPS * 3.6).toFixed(1)} km/h 속도를 높이면 신호를 통과할 수 있어요`;
     } else {
       return '이번 신호 통과가 어려워요. 잠시 기다리세요';
     }
-  }, [firstSignal, userLocation, isCurrentlyRed, signalCountdown, routeCoords]);
+  }, [firstSignal, userLocation, isCurrentlyRed, signalCountdown, routeCoords, avgSpeedMps]);
 
   useEffect(() => {
     if (!firstSignal) return;
@@ -1226,7 +1234,7 @@ export default function MapScreen() {
                     <Ionicons name="flash" size={14} color={Colors.primary} />
                     <Text style={styles.statLabel}>권장 속도</Text>
                   </View>
-                  <Text style={styles.statValue}>4.8 km/h로{"\n"}걸으세요</Text>
+                  <Text style={styles.statValue}>{(avgSpeedMps * 3.6).toFixed(1)} km/h로{"\n"}걸으세요</Text>
                 </View>
                 <View style={styles.statCard}>
                   <View style={styles.statHeader}>

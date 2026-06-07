@@ -8,6 +8,7 @@ import type { RootStackParamList } from '../navigation/AppNavigator';
 import { getProfile, ProfileResponse } from '../api/profileApi';
 import { logoutFromServer } from '../api/authApi';
 import { storage } from '../utils/storage';
+import { fetchWithAuth } from '../api/fetchWithAuth';
 import { API } from '../api/config';
 
 export default function ProfileScreen() {
@@ -45,14 +46,8 @@ export default function ProfileScreen() {
                   style: 'destructive',
                   onPress: async () => {
                     try {
-                      const accessToken = await storage.getToken();
-                      const refreshToken = await storage.getRefreshToken();
-                      const res = await fetch(API.auth.withdraw, {
+                      const res = await fetchWithAuth(API.auth.withdraw, {
                         method: 'DELETE',
-                        headers: {
-                          'Authorization': `Bearer ${accessToken}`,
-                          'Refresh-Token': refreshToken ?? '',
-                        },
                       });
                       if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
