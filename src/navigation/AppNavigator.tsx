@@ -29,6 +29,8 @@ export type RootStackParamList = {
     | {
         routeData: RouteResponse;
         destinationName: string;
+        destinationLat: number;
+        destinationLng: number;
         originName: string;
         steps: NavStep[];
       }

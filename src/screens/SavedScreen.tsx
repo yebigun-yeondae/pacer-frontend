@@ -1,7 +1,8 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView,
   Modal, FlatList, ActivityIndicator, TouchableOpacity, Alert, TextInput,
+  Platform, Keyboard, Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
@@ -10,6 +11,8 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { fetchWithAuth } from '../api/fetchWithAuth';
 import { API } from '../api/config';
+
+const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY!;
 
 // ── 아이콘 옵션 ────────────────────────────────────────────────────────────────
 const ICON_OPTIONS = [
@@ -48,6 +51,21 @@ interface RouteHistory {
   createdAt: string;
 }
 
+interface KakaoPlace {
+  place_name: string;
+  address_name: string;
+  road_address_name: string;
+  x: string; // lng
+  y: string; // lat
+}
+
+interface PendingPlace {
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+
 function formatCreatedAt(iso: string): string {
   const d = new Date(iso);
   const yyyy = d.getFullYear();
@@ -81,6 +99,35 @@ export default function SavedScreen() {
   const [labelText, setLabelText]           = useState('');
   const [selectedIcon, setSelectedIcon]     = useState<IconKey>('home');
   const [isSaving, setIsSaving]             = useState(false);
+  const [pendingPlace, setPendingPlace]     = useState<PendingPlace | null>(null);
+
+  // 검색 탭
+  const [activeTab, setActiveTab]           = useState<'history' | 'search'>('history');
+  const [searchQuery, setSearchQuery]       = useState('');
+  const [searchResults, setSearchResults]   = useState<KakaoPlace[]>([]);
+  const [isSearching, setIsSearching]       = useState(false);
+
+  // 키보드 오프셋 (모달 시트 위로 밀기)
+  const keyboardOffset = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = Keyboard.addListener(showEvt, (e) => {
+      Animated.timing(keyboardOffset, {
+        toValue: e.endCoordinates.height,
+        duration: 250,
+        useNativeDriver: false,
+      }).start();
+    });
+    const onHide = Keyboard.addListener(hideEvt, () => {
+      Animated.timing(keyboardOffset, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: false,
+      }).start();
+    });
+    return () => { onShow.remove(); onHide.remove(); };
+  }, [keyboardOffset]);
 
   // ── 즐겨찾기 목록 로드 ─────────────────────────────────────────────────────
   const loadFavorites = useCallback(async () => {
@@ -118,6 +165,7 @@ export default function SavedScreen() {
   }, []);
 
   const closeHistory = useCallback(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     setHistoryVisible(false);
     setHistoryList([]);
     setHistoryError(null);
@@ -125,6 +173,10 @@ export default function SavedScreen() {
     setShowLabelInput(false);
     setLabelText('');
     setSelectedIcon('home');
+    setPendingPlace(null);
+    setActiveTab('history');
+    setSearchQuery('');
+    setSearchResults([]);
   }, []);
 
   // ── 경로 저장 (미구현 — 완료 문구만) ──────────────────────────────────────
@@ -136,7 +188,8 @@ export default function SavedScreen() {
   }, [closeHistory]);
 
   // ── 장소 저장 — label 입력 단계 진입 ─────────────────────────────────────
-  const handleOpenLabelInput = useCallback(() => {
+  const handleOpenLabelInput = useCallback((place: PendingPlace) => {
+    setPendingPlace(place);
     setLabelText('');
     setSelectedIcon('home');
     setShowLabelInput(true);
@@ -144,7 +197,7 @@ export default function SavedScreen() {
 
   // ── 장소 저장 — POST ──────────────────────────────────────────────────────
   const handleSavePlace = useCallback(async () => {
-    if (!selectedItem || !labelText.trim()) {
+    if (!pendingPlace || !labelText.trim()) {
       Alert.alert('알림', '장소 이름을 입력해주세요.');
       return;
     }
@@ -152,16 +205,16 @@ export default function SavedScreen() {
     try {
       const body = {
         label:   labelText.trim(),
-        lat:     selectedItem.destinationLat,
-        lng:     selectedItem.destinationLng,
-        address: selectedItem.destinationName,
+        lat:     pendingPlace.lat,
+        lng:     pendingPlace.lng,
+        address: pendingPlace.address,
       };
       const res = await fetchWithAuth(API.favorites.save, {
         method: 'POST',
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`서버 오류: ${res.status}`);
-      await loadFavorites(); // 목록 갱신
+      await loadFavorites();
       closeHistory();
       Alert.alert('저장 완료', `'${labelText.trim()}'이(가) 즐겨찾기에 저장되었습니다.`);
     } catch (e: any) {
@@ -169,7 +222,39 @@ export default function SavedScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [selectedItem, labelText, loadFavorites, closeHistory]);
+  }, [pendingPlace, labelText, loadFavorites, closeHistory]);
+
+  // ── 카카오 장소 검색 ──────────────────────────────────────────────────────
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchPlaces = useCallback(async (query: string) => {
+    if (!query.trim()) { setSearchResults([]); return; }
+    setIsSearching(true);
+    try {
+      const url = `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(query.trim())}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setSearchResults(data.documents ?? []);
+    } catch {
+      // 실패 시 조용히 처리
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  const handleSearchChange = useCallback((text: string) => {
+    setSearchQuery(text);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => fetchPlaces(text), 400);
+  }, [fetchPlaces]);
+
+  const handleSearchPlace = useCallback(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    fetchPlaces(searchQuery);
+  }, [fetchPlaces, searchQuery]);
 
   // ── 즐겨찾기 삭제 — DELETE /api/v1/favorites/{id} ────────────────────────
   const handleDeleteFavorite = useCallback(async (id: string, label: string) => {
@@ -269,19 +354,41 @@ export default function SavedScreen() {
         transparent
         onRequestClose={closeHistory}
       >
-        <Pressable style={styles.modalOverlay} onPress={closeHistory} />
-        <View style={styles.modalSheet}>
+        <View style={styles.modalKav}>
+          <Pressable
+            style={[StyleSheet.absoluteFillObject, styles.modalOverlay]}
+            onPress={closeHistory}
+          />
+          <Animated.View style={[styles.modalSheet, { marginBottom: keyboardOffset }]}>
           <View style={styles.modalHandle} />
 
           {/* 모달 헤더 */}
           <View style={styles.modalTitleRow}>
             <Text style={styles.modalTitle}>
-              {showLabelInput ? '장소 이름 입력' : '최근 탐색한 경로'}
+              {showLabelInput ? '장소 이름 입력' : '즐겨찾기 추가'}
             </Text>
             <Pressable onPress={showLabelInput ? () => setShowLabelInput(false) : closeHistory} hitSlop={12}>
               <Ionicons name={showLabelInput ? 'chevron-back' : 'close'} size={22} color={Colors.textSecondary} />
             </Pressable>
           </View>
+
+          {/* 탭 바 */}
+          {!showLabelInput && (
+            <View style={styles.tabBar}>
+              <Pressable
+                style={[styles.tab, activeTab === 'history' && styles.tabActive]}
+                onPress={() => setActiveTab('history')}
+              >
+                <Text style={[styles.tabText, activeTab === 'history' && styles.tabTextActive]}>최근 경로</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.tab, activeTab === 'search' && styles.tabActive]}
+                onPress={() => setActiveTab('search')}
+              >
+                <Text style={[styles.tabText, activeTab === 'search' && styles.tabTextActive]}>장소 검색</Text>
+              </Pressable>
+            </View>
+          )}
 
           {/* ── 장소 이름 입력 화면 ── */}
           {showLabelInput && (
@@ -316,12 +423,12 @@ export default function SavedScreen() {
                 autoFocus
               />
 
-              {/* 선택된 경로 요약 */}
-              {selectedItem && (
+              {/* 선택된 장소 요약 */}
+              {pendingPlace && (
                 <View style={styles.selectedRouteSummary}>
-                  <Ionicons name="navigate-outline" size={14} color={Colors.textSecondary} />
+                  <Ionicons name="location-outline" size={14} color={Colors.textSecondary} />
                   <Text style={styles.selectedRouteSummaryText} numberOfLines={1}>
-                    {selectedItem.destinationName}
+                    {pendingPlace.name}
                   </Text>
                 </View>
               )}
@@ -340,8 +447,8 @@ export default function SavedScreen() {
             </View>
           )}
 
-          {/* ── 히스토리 목록 ── */}
-          {!showLabelInput && (
+          {/* ── 히스토리 탭 ── */}
+          {!showLabelInput && activeTab === 'history' && (
             <>
               {isHistLoading && (
                 <ActivityIndicator style={{ marginTop: 40 }} size="large" color={Colors.primary} />
@@ -391,7 +498,15 @@ export default function SavedScreen() {
               {/* 항목 선택 시 액션 버튼 */}
               {selectedItem && (
                 <View style={styles.actionBar}>
-                  <Pressable style={styles.actionBtnPlace} onPress={handleOpenLabelInput}>
+                  <Pressable
+                    style={styles.actionBtnPlace}
+                    onPress={() => handleOpenLabelInput({
+                      name: selectedItem.destinationName,
+                      address: selectedItem.destinationName,
+                      lat: selectedItem.destinationLat,
+                      lng: selectedItem.destinationLng,
+                    })}
+                  >
                     <Ionicons name="location" size={16} color="#fff" />
                     <Text style={styles.actionBtnPlaceText}>장소 저장</Text>
                   </Pressable>
@@ -399,6 +514,73 @@ export default function SavedScreen() {
               )}
             </>
           )}
+
+          {/* ── 검색 탭 ── */}
+          {!showLabelInput && activeTab === 'search' && (
+            <View style={styles.searchTabWrap}>
+              <View style={styles.searchInputRow}>
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="장소명 또는 주소 검색"
+                  placeholderTextColor={Colors.textMuted}
+                  value={searchQuery}
+                  onChangeText={handleSearchChange}
+                  onSubmitEditing={handleSearchPlace}
+                  returnKeyType="search"
+                />
+                <Pressable style={styles.searchBtn} onPress={handleSearchPlace} disabled={isSearching}>
+                  {isSearching
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Ionicons name="search" size={18} color="#fff" />
+                  }
+                </Pressable>
+              </View>
+              <FlatList
+                data={searchResults}
+                keyExtractor={(_, i) => String(i)}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ gap: 0, paddingBottom: 8 }}
+                renderItem={({ item }) => {
+                  const place: PendingPlace = {
+                    name: item.place_name,
+                    address: item.road_address_name || item.address_name,
+                    lat: parseFloat(item.y),
+                    lng: parseFloat(item.x),
+                  };
+                  return (
+                    <TouchableOpacity
+                      style={styles.searchResultItem}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        Alert.alert(
+                          '즐겨찾기 추가',
+                          `'${place.name}'을(를) 즐겨찾기에 추가하시겠습니까?`,
+                          [
+                            { text: '아니오', style: 'cancel' },
+                            { text: '예', onPress: () => handleOpenLabelInput(place) },
+                          ]
+                        );
+                      }}
+                    >
+                      <Ionicons name="location-outline" size={16} color={Colors.primary} style={{ marginTop: 2 }} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.searchResultName}>{item.place_name}</Text>
+                        <Text style={styles.searchResultAddr} numberOfLines={1}>
+                          {item.road_address_name || item.address_name}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+                ListEmptyComponent={
+                  !isSearching && searchQuery.length > 0
+                    ? <Text style={styles.emptyText}>검색 결과가 없습니다</Text>
+                    : null
+                }
+              />
+            </View>
+          )}
+          </Animated.View>
         </View>
       </Modal>
     </View>
@@ -455,14 +637,19 @@ const styles = StyleSheet.create({
   addRouteText: { fontSize: 14, color: Colors.textSecondary },
 
   // 모달
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },
-  modalSheet: { backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingBottom: 40, maxHeight: '78%' },
+  modalKav: { flex: 1 },
+  modalOverlay: { backgroundColor: 'rgba(0,0,0,0.35)' },
+  modalSheet: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 24, paddingBottom: 40, maxHeight: '78%',
+  },
   modalHandle: { width: 48, height: 4, backgroundColor: '#d1d5db', borderRadius: 2, alignSelf: 'center', marginVertical: 14 },
   modalTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
 
   emptyWrap: { alignItems: 'center', gap: 12, paddingVertical: 48 },
-  emptyText: { fontSize: 14, color: Colors.textMuted },
+  emptyText: { textAlign: 'center', fontSize: 14, color: Colors.textMuted, paddingVertical: 8 },
 
   // 히스토리 목록
   historyList: { gap: 10, paddingBottom: 8 },
@@ -482,6 +669,22 @@ const styles = StyleSheet.create({
   actionBtnRouteText: { fontSize: 15, fontWeight: '600', color: Colors.primary },
   actionBtnPlace: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: Colors.primary, borderRadius: 14, paddingVertical: 14 },
   actionBtnPlaceText: { fontSize: 15, fontWeight: '600', color: '#fff' },
+
+  // 탭 바
+  tabBar: { flexDirection: 'row', backgroundColor: Colors.bgCard, borderRadius: 12, padding: 4, marginBottom: 16 },
+  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
+  tabActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  tabText: { fontSize: 14, color: Colors.textMuted, fontWeight: '500' },
+  tabTextActive: { color: Colors.primary, fontWeight: '700' },
+
+  // 검색 탭
+  searchTabWrap: { flex: 1 },
+  searchInputRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  searchInput: { flex: 1, backgroundColor: Colors.bgCard, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 13, fontSize: 15, color: Colors.textPrimary },
+  searchBtn: { width: 48, height: 48, borderRadius: 12, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' },
+  searchResultItem: { flexDirection: 'row', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f3f4f6', alignItems: 'flex-start' },
+  searchResultName: { fontSize: 15, fontWeight: '600', color: Colors.textPrimary },
+  searchResultAddr: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
 
   // 장소 이름 입력
   labelInputWrap: { paddingTop: 4, gap: 8 },

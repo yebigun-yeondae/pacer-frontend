@@ -30,6 +30,9 @@ import {
   searchRoute,
 } from "../api/routeApi";
 import type { RouteResponse, NavStep } from "../api/routeApi";
+import { navStatusStore } from "../utils/navStatus";
+import { fetchWithAuth } from "../api/fetchWithAuth";
+import { API } from "../api/config";
 
 function decodePolyline(encoded: string): [number, number][] {
   const coords: [number, number][] = [];
@@ -293,6 +296,7 @@ export default function MapScreen() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [routeCoords, setRouteCoords] = useState<[number, number][]>([]);
   const [isRerouting, setIsRerouting] = useState(false);
+  const [hasEnteredRoute, setHasEnteredRoute] = useState(false);
   const lastRerouteRef = useRef<number>(0);
   const destinationRef = useRef<{
     name: string;
@@ -309,6 +313,11 @@ export default function MapScreen() {
   const hasEnteredRouteRef = useRef<boolean>(false);
   const isOnRouteRef = useRef<boolean>(false);
   const pendingEntryRef = useRef<boolean>(false);
+
+  // ── 속도 업데이트용 누적 데이터 ─────────────────────────────────────────
+  const navStartTimeRef   = useRef<number>(0);
+  const navTotalDistRef   = useRef<number>(0);
+  const navLastGpsPosRef  = useRef<{ lat: number; lng: number } | null>(null);
 
   const SIGNAL_CYCLE = 15;
 
@@ -421,6 +430,16 @@ export default function MapScreen() {
     destinationRef.current = destination;
   }, [destination]);
 
+  // isRerouting → navStatus 동기화
+  useEffect(() => {
+    if (!isNavigating) return;
+    if (isRerouting) {
+      navStatusStore.set('rerouting');
+    } else {
+      navStatusStore.set(hasEnteredRoute ? 'navigating' : 'measuring');
+    }
+  }, [isRerouting, isNavigating, hasEnteredRoute]);
+
   // 경로 이탈 감지 — isNavigating 중에만 실행
   useEffect(() => {
     if (!isNavigating || routeCoords.length === 0) return;
@@ -442,6 +461,16 @@ export default function MapScreen() {
 
           // React state 업데이트 (신호 메시지 계산용)
           setUserLocation({ lat: latitude, lng: longitude });
+
+          // 이동 거리 누적 (속도 업데이트용)
+          if (navLastGpsPosRef.current) {
+            const d = haversineMeters(
+              navLastGpsPosRef.current.lat, navLastGpsPosRef.current.lng,
+              latitude, longitude,
+            );
+            navTotalDistRef.current += d;
+          }
+          navLastGpsPosRef.current = { lat: latitude, lng: longitude };
 
           // ── 현재 위치 마커 실시간 이동 ──────────────────────────────────
           webviewRef.current?.injectJavaScript(`
@@ -490,7 +519,11 @@ export default function MapScreen() {
             // ── 경로 안 ──────────────────────────────────────────────────
             if (!isOnRouteRef.current) {
               // 경로에 (재)진입: 진입 대기 해제 + 진입 여부 기록
-              hasEnteredRouteRef.current = true;
+              if (!hasEnteredRouteRef.current) {
+                hasEnteredRouteRef.current = true;
+                setHasEnteredRoute(true);
+                navStatusStore.set('navigating');
+              }
               pendingEntryRef.current = false;
             }
             isOnRouteRef.current = true;
@@ -637,10 +670,15 @@ export default function MapScreen() {
     setRouteData(route);
     setRouteCoords(coordinates); // 이탈 감지를 위해 저장
     lastNearestIdxRef.current = 0; // 새 경로 시작 시 진행 인덱스 초기화
-    // 새 경로가 적용될 때마다 이탈 상태 머신 초기화
+    // 새 경로가 적용될 때마다 이탈 상태 머신 + 속도 누적 초기화
     hasEnteredRouteRef.current = false;
     isOnRouteRef.current = false;
     pendingEntryRef.current = false;
+    setHasEnteredRoute(false);
+    navStatusStore.set('measuring');
+    navStartTimeRef.current = Date.now();
+    navTotalDistRef.current = 0;
+    navLastGpsPosRef.current = null;
     setRouteSteps([]);
     // 경로 탐색 완료 시 지도가 보이도록 시트를 접어둠 (핸들 클릭으로 펼칠 수 있음)
     setSheetExpanded(false);
@@ -753,6 +791,38 @@ export default function MapScreen() {
     }
   };
 
+  // ── 경로 안내 종료 + 속도 업데이트 API 호출 ──────────────────────────
+  const handleEndNavigation = async () => {
+    // 지도 경로 제거
+    webviewRef.current?.injectJavaScript(`window.clearRoute(); true;`);
+
+    // 속도 업데이트 (백그라운드, 실패해도 조용히 처리)
+    const elapsedSec = (Date.now() - navStartTimeRef.current) / 1000;
+    const walkedDist = navTotalDistRef.current;
+    if (walkedDist > 0 && elapsedSec > 0) {
+      const segments = [{
+        distanceM: Math.round(walkedDist * 10) / 10,
+        durationS: Math.round(elapsedSec),
+        slopeDeg:  0.0,  // 경사도 미구현 — 0으로 고정
+      }];
+      fetchWithAuth(API.profile.updateSpeed, {
+        method: 'POST',
+        body: JSON.stringify({ segments }),
+      }).catch(() => {}); // 실패 시 무시
+    }
+
+    // 상태 초기화
+    setIsNavigating(false);
+    setRouteData(null);
+    setRouteCoords([]);
+    setDestination(null);
+    setOrigin(null);
+    navTotalDistRef.current = 0;
+    navLastGpsPosRef.current = null;
+
+    Alert.alert("경로 안내 종료", "경로 탐색이 종료되었습니다.");
+  };
+
   const moveToCurrentLocation = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== "granted") return;
@@ -854,12 +924,6 @@ export default function MapScreen() {
                     ? "경로 탐색"
                     : "목적지 설정"}
               </Text>
-            </Pressable>
-            <Pressable
-              style={styles.safetyFab}
-              onPress={() => nav.navigate("Safety", undefined)}
-            >
-              <Ionicons name="shield-checkmark" size={22} color="#fff" />
             </Pressable>
           </View>
         </View>
@@ -1063,25 +1127,27 @@ export default function MapScreen() {
               </View>
             )}
           </View>
-          <Pressable
-            onPress={() => {
-              webviewRef.current?.injectJavaScript(
-                `window.clearRoute(); true;`,
-              );
-              setIsNavigating(false);
-              setRouteData(null);
-              setRouteCoords([]);
-              setDestination(null);
-              setOrigin(null);
-              Alert.alert("경로 안내 종료", "경로 탐색이 종료되었습니다.");
-            }}
-          >
-            <Ionicons
-              name="close-circle"
-              size={26}
-              color={Colors.textSecondary}
-            />
-          </Pressable>
+          <View style={{ gap: 10, alignItems: 'center' }}>
+            <Pressable
+              onPress={() => destination && routeData && nav.navigate("Safety", {
+                routeData,
+                destinationName: destination.name,
+                destinationLat: destination.lat,
+                destinationLng: destination.lng,
+                originName: origin?.name ?? '현재 위치',
+                steps: routeSteps,
+              })}
+            >
+              <Ionicons name="shield-checkmark" size={24} color={Colors.primary} />
+            </Pressable>
+            <Pressable onPress={handleEndNavigation}>
+              <Ionicons
+                name="close-circle"
+                size={26}
+                color={Colors.textSecondary}
+              />
+            </Pressable>
+          </View>
         </View>
       )}
 

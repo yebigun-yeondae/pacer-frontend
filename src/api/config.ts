@@ -8,7 +8,8 @@ export const API = {
     withdraw:   `${BASE_URL}/api/v1/auth/withdraw`, // DELETE — 회원 탈퇴
   },
   profile: {
-    get: `${BASE_URL}/api/v1/profile`, // GET — 프로필 조회
+    get:         `${BASE_URL}/api/v1/profile`,       // GET  — 프로필 조회
+    updateSpeed: `${BASE_URL}/api/v1/profile/walking-speed`, // POST — 사용자 속도 업데이트
   },
   routes: {
     search:  `${BASE_URL}/api/v1/routes`,         // POST — 경로 탐색

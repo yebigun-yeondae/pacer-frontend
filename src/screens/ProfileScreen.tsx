@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Alert, Switch } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Alert, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -15,7 +15,6 @@ export default function ProfileScreen() {
   const [signalAlert, setSignalAlert] = useState(true);
   const [transitAlert, setTransitAlert] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [stride, setStride] = useState('65');
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
 
   useFocusEffect(
@@ -134,19 +133,10 @@ export default function ProfileScreen() {
             <Text style={styles.cardTitleText}>보행 설정</Text>
           </View>
           <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>보행 속도</Text>
-            <Text style={styles.settingValue}>보통 (4.5 km/h)</Text>
-          </View>
-          <View style={styles.sliderTrack}>
-            <View style={[styles.sliderFill, { width: '55%' }]} />
-            <View style={[styles.sliderThumb, { left: '55%' }]} />
-          </View>
-          <View style={{ gap: 12, marginTop: 12 }}>
-            <Text style={[styles.settingLabel, { fontWeight: '600' }]}>보폭 (cm)</Text>
-            <View style={styles.inputWrap}>
-              <TextInput style={styles.input} value={stride} onChangeText={setStride} keyboardType="numeric" />
-              <Text style={styles.inputSuffix}>cm</Text>
-            </View>
+            <Text style={styles.settingLabel}>내 평균 보행 속도</Text>
+            <Text style={styles.speedValue}>
+              {profile ? `${(profile.avgSpeedMps * 3.6).toFixed(1)} km/h` : '- km/h'}
+            </Text>
           </View>
         </View>
 
@@ -260,19 +250,7 @@ const styles = StyleSheet.create({
   settingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   settingLabel: { fontSize: 14, color: Colors.textPrimary },
   settingValue: { fontSize: 14, fontWeight: '600', color: Colors.primary },
-
-  sliderTrack: { height: 8, backgroundColor: Colors.bgInput, borderRadius: 4, position: 'relative', marginTop: 12 },
-  sliderFill: { height: '100%', backgroundColor: Colors.primary, borderRadius: 4 },
-  sliderThumb: {
-    position: 'absolute', top: -6, width: 20, height: 20,
-    backgroundColor: Colors.primary, borderWidth: 3, borderColor: '#fff',
-    borderRadius: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4,
-    marginLeft: -10,
-  },
-
-  inputWrap: { position: 'relative' },
-  input: { backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.textPrimary },
-  inputSuffix: { position: 'absolute', right: 16, top: 16, fontSize: 14, color: '#797b78' },
+  speedValue: { fontSize: 20, fontWeight: '700', color: Colors.primary },
 
   withdrawBtn: {
     backgroundColor: 'rgba(239,68,68,0.07)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(239,68,68,0.2)',

@@ -87,12 +87,17 @@ const miniMapHtml = `<!DOCTYPE html>
       center: new kakao.maps.LatLng(37.5665, 126.9780),
       level: 4
     });
-    map.setDraggable(false);
-    map.setZoomable(false);
 
+    var isTracking = true;
     var userOverlay = null;
     var stopMarkers = [];
     var stopInfoWindows = [];
+
+    // 드래그 시작 → RN에 알림
+    kakao.maps.event.addListener(map, 'dragstart', function() {
+      isTracking = false;
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'drag' }));
+    });
 
     window.updateUserLocation = function(lat, lng) {
       var pos = new kakao.maps.LatLng(lat, lng);
@@ -103,11 +108,18 @@ const miniMapHtml = `<!DOCTYPE html>
         userOverlay = new kakao.maps.CustomOverlay({ position: pos, content: content, yAnchor: 0.5, xAnchor: 0.5 });
         userOverlay.setMap(map);
       }
+      if (isTracking) map.setCenter(pos);
+    };
+
+    // RN에서 호출: 추적 재개 + 현재 위치로 이동
+    window.setTracking = function(lat, lng) {
+      isTracking = true;
+      var pos = new kakao.maps.LatLng(lat, lng);
       map.setCenter(pos);
+      if (userOverlay) userOverlay.setPosition(pos);
     };
 
     window.showBusStops = function(stopsJson) {
-      // 기존 마커 + 인포윈도우 제거
       stopMarkers.forEach(function(m) { m.setMap(null); });
       stopInfoWindows.forEach(function(iw) { iw.close(); });
       stopMarkers = [];
@@ -115,9 +127,7 @@ const miniMapHtml = `<!DOCTYPE html>
       var stops = JSON.parse(stopsJson);
       stops.forEach(function(stop) {
         var pos = new kakao.maps.LatLng(stop.lat, stop.lng);
-        // 핀 마커
         var marker = new kakao.maps.Marker({ position: pos, map: map });
-        // 정류장 이름 말풍선
         var infowindow = new kakao.maps.InfoWindow({
           content: '<div style="padding:4px 8px;font-size:11px;font-weight:600;white-space:nowrap;">' + stop.name + '</div>',
           removable: false
@@ -150,6 +160,8 @@ export default function SearchScreen() {
   const currentLocRef = useRef<{ lat: number; lng: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [busStops, setBusStops] = useState<BusStop[]>([]);
+  const [isMapTracking, setIsMapTracking] = useState(true);
+  const [isMapTouching, setIsMapTouching] = useState(false);
 
   // 포커스될 때마다 즐겨찾기 + 히스토리 로드 + GPS 시작
   useFocusEffect(
@@ -233,6 +245,24 @@ export default function SearchScreen() {
     }
   };
 
+  // 미니맵 메시지 핸들러 (드래그 감지)
+  const handleMapMessage = useCallback((event: any) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === 'drag') setIsMapTracking(false);
+    } catch {}
+  }, []);
+
+  // '내 위치로' 버튼
+  const handleRecenter = useCallback(() => {
+    const loc = currentLocRef.current;
+    if (!loc) return;
+    miniMapRef.current?.injectJavaScript(
+      `window.setTracking(${loc.lat}, ${loc.lng}); true;`
+    );
+    setIsMapTracking(true);
+  }, []);
+
   // 목적지 선택 → MapDetail 이동
   const handleDestSelect = useCallback(
     (item: RouteHistory) => {
@@ -251,28 +281,18 @@ export default function SearchScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Safety FAB */}
-      <Pressable
-        style={({ pressed }) => [styles.safetyFab, pressed && { opacity: 0.85 }]}
-        onPress={() => nav.navigate("Safety")}
-      >
-        <Ionicons name="shield-checkmark" size={22} color="#fff" />
-      </Pressable>
-
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Ionicons name="search" size={18} color={Colors.primary} />
           <Text style={styles.headerTitle}>Explore Paths</Text>
         </View>
-        <Pressable onPress={() => nav.navigate("MapDetail")}>
-          <Ionicons name="map-outline" size={20} color={Colors.textSecondary} />
-        </Pressable>
       </View>
 
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        scrollEnabled={!isMapTouching}
       >
         {/* Search Input */}
         <View style={styles.inputWrap}>
@@ -370,7 +390,12 @@ export default function SearchScreen() {
           <Text style={styles.sectionTitle}>주변 정류장</Text>
 
           {/* 정사각형 카카오 지도 */}
-          <View style={[styles.miniMapContainer, { width: MAP_SIZE, height: MAP_SIZE }]}>
+          <View
+            style={[styles.miniMapContainer, { width: MAP_SIZE, height: MAP_SIZE }]}
+            onTouchStart={() => setIsMapTouching(true)}
+            onTouchEnd={() => setIsMapTouching(false)}
+            onTouchCancel={() => setIsMapTouching(false)}
+          >
             <WebView
               ref={miniMapRef}
               source={{ html: miniMapHtml }}
@@ -378,6 +403,7 @@ export default function SearchScreen() {
               javaScriptEnabled
               domStorageEnabled
               onLoad={() => setMapLoaded(true)}
+              onMessage={handleMapMessage}
               scrollEnabled={false}
             />
             {/* 새로고침 버튼 */}
@@ -391,6 +417,15 @@ export default function SearchScreen() {
                 : <Ionicons name="refresh" size={18} color={Colors.primary} />
               }
             </Pressable>
+            {/* 내 위치로 버튼 (드래그 후 표시) */}
+            {!isMapTracking && (
+              <Pressable
+                style={({ pressed }) => [styles.recenterBtn, pressed && { opacity: 0.8 }]}
+                onPress={handleRecenter}
+              >
+                <Ionicons name="locate" size={18} color={Colors.primary} />
+              </Pressable>
+            )}
           </View>
 
           {/* 버스정류장 목록 */}
@@ -502,6 +537,22 @@ const styles = StyleSheet.create({
   refreshBtn: {
     position: "absolute",
     right: 12,
+    bottom: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  recenterBtn: {
+    position: "absolute",
+    left: 12,
     bottom: 12,
     width: 40,
     height: 40,
