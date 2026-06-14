@@ -26,9 +26,6 @@ export default function OnboardingScreen({ navigation }: Props) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.logo}>SAFE PATHS</Text>
-        <Pressable onPress={() => navigation.replace('Auth')}>
-          <Text style={styles.skip}>SKIP</Text>
-        </Pressable>
       </View>
 
       {/* Hero Illustration */}
@@ -86,14 +83,9 @@ export default function OnboardingScreen({ navigation }: Props) {
 
       {/* Bottom */}
       <View style={styles.bottom}>
-        <View style={styles.dots}>
-          <View style={[styles.dot, styles.dotActive]} />
-          <View style={[styles.dot, styles.dotInactive]} />
-          <View style={[styles.dot, styles.dotInactive]} />
-        </View>
         <Pressable
           style={({ pressed }) => [styles.cta, pressed && { opacity: 0.9, transform: [{ scale: 0.97 }] }]}
-          onPress={() => navigation.replace('Auth')}
+          onPress={() => navigation.navigate('Auth')}
         >
           <Text style={styles.ctaText}>시작하기</Text>
           <Ionicons name="arrow-forward" size={16} color={Colors.primaryText} />
@@ -110,7 +102,6 @@ const styles = StyleSheet.create({
     paddingTop: 60, paddingHorizontal: 32,
   },
   logo: { fontWeight: '800', fontSize: 20, color: Colors.primary, letterSpacing: 2 },
-  skip: { fontSize: 14, fontWeight: '500', color: 'rgba(93,96,92,0.6)', letterSpacing: 0.35 },
 
   hero: {
     marginHorizontal: 32, marginTop: 20, height: 360, borderRadius: 40,
@@ -163,10 +154,6 @@ const styles = StyleSheet.create({
   storyP: { marginTop: 16, fontSize: 17, color: 'rgba(93,96,92,0.8)', lineHeight: 26 },
 
   bottom: { paddingHorizontal: 32, paddingTop: 24, paddingBottom: 40 },
-  dots: { flexDirection: 'row', gap: 8, marginBottom: 24 },
-  dot: { height: 6, borderRadius: 3 },
-  dotActive: { width: 32, backgroundColor: Colors.primary },
-  dotInactive: { width: 6, backgroundColor: '#e1e3de' },
   cta: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: Colors.primary, paddingVertical: 20, paddingHorizontal: 40,

@@ -11,6 +11,7 @@ import {
   FlatList,
   TouchableOpacity,
   Dimensions,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../theme/colors";
@@ -21,22 +22,14 @@ import { fetchWithAuth } from "../api/fetchWithAuth";
 import { API } from "../api/config";
 import WebView from "react-native-webview";
 import * as Location from "expo-location";
+import { getPreset } from "../constants/favorites";
+import { searchKakaoPlaces, KakaoPlace } from "../api/kakaoApi";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY!;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const MAP_SIZE = SCREEN_WIDTH - 48; // content padding 24 * 2
 const BUS_STOP_RADIUS = 500;        // 500m 반경
-
-// ── 아이콘 프리셋 ──────────────────────────────────────────────────────────────
-const ICON_OPTIONS = [
-  { icon: "home" as const,             color: Colors.primaryLight, iconColor: Colors.primary },
-  { icon: "school-outline" as const,   color: Colors.brownLight,   iconColor: Colors.textDanger },
-  { icon: "briefcase-outline" as const,color: Colors.yellow,       iconColor: Colors.brown },
-];
-function getPreset(index: number) {
-  return ICON_OPTIONS[index % ICON_OPTIONS.length];
-}
 
 // ── 타입 ──────────────────────────────────────────────────────────────────────
 interface FavoriteItem {
@@ -65,11 +58,7 @@ interface BusStop {
   lng: number;
 }
 
-// ── 유틸 ──────────────────────────────────────────────────────────────────────
-function formatCreatedAt(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
+import { formatCreatedAt } from "../utils/format";
 
 // ── 미니 지도 HTML ─────────────────────────────────────────────────────────────
 const miniMapHtml = `<!DOCTYPE html>
@@ -97,6 +86,14 @@ const miniMapHtml = `<!DOCTYPE html>
     kakao.maps.event.addListener(map, 'dragstart', function() {
       isTracking = false;
       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'drag' }));
+    });
+
+    // 지도 중심 좌표가 바뀔 때마다 RN에 전달 (정류장 새로고침 기준 좌표로 사용)
+    kakao.maps.event.addListener(map, 'center_changed', function() {
+      var center = map.getCenter();
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'center', lat: center.getLat(), lng: center.getLng()
+      }));
     });
 
     window.updateUserLocation = function(lat, lng) {
@@ -132,7 +129,13 @@ const miniMapHtml = `<!DOCTYPE html>
           content: '<div style="padding:4px 8px;font-size:11px;font-weight:600;white-space:nowrap;">' + stop.name + '</div>',
           removable: false
         });
-        infowindow.open(map, marker);
+        kakao.maps.event.addListener(marker, 'click', function() {
+          if (infowindow.getMap()) {
+            infowindow.close();
+          } else {
+            infowindow.open(map, marker);
+          }
+        });
         stopMarkers.push(marker);
         stopInfoWindows.push(infowindow);
       });
@@ -158,10 +161,17 @@ export default function SearchScreen() {
   const miniMapRef = useRef<WebView>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const currentLocRef = useRef<{ lat: number; lng: number } | null>(null);
+  const mapCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [busStops, setBusStops] = useState<BusStop[]>([]);
   const [isMapTracking, setIsMapTracking] = useState(true);
   const [isMapTouching, setIsMapTouching] = useState(false);
+
+  // 장소 검색
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<KakaoPlace[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 포커스될 때마다 즐겨찾기 + 히스토리 로드 + GPS 시작
   useFocusEffect(
@@ -228,14 +238,17 @@ export default function SearchScreen() {
 
   // 버스정류장 새로고침
   const handleRefreshStops = async () => {
-    const loc = currentLocRef.current;
+    const loc = mapCenterRef.current ?? currentLocRef.current;
     if (!loc || isRefreshing) return;
     setIsRefreshing(true);
     try {
       const url = `${API.busStops.nearby}?lat=${loc.lat}&lng=${loc.lng}&radiusM=${BUS_STOP_RADIUS}`;
       const res = await fetchWithAuth(url, { method: "GET" });
       if (!res.ok) return;
-      const data: BusStop[] = await res.json();
+      const raw = await res.text();
+      // TODO: 디버깅용 — 확인 후 제거
+      Alert.alert("정류장 응답", `URL: ${url}\n\n${raw.slice(0, 500)}`);
+      const data: BusStop[] = JSON.parse(raw);
       setBusStops(data);
       miniMapRef.current?.injectJavaScript(
         `window.showBusStops(${JSON.stringify(JSON.stringify(data))}); true;`
@@ -250,6 +263,7 @@ export default function SearchScreen() {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
       if (msg.type === 'drag') setIsMapTracking(false);
+      if (msg.type === 'center') mapCenterRef.current = { lat: msg.lat, lng: msg.lng };
     } catch {}
   }, []);
 
@@ -271,6 +285,45 @@ export default function SearchScreen() {
         destinationName: item.destinationName,
         destinationLat: item.destinationLat,
         destinationLng: item.destinationLng,
+      });
+    },
+    [nav]
+  );
+
+  // ── 장소 검색 ────────────────────────────────────────────────────────────
+  const fetchPlaces = useCallback(async (query: string) => {
+    if (!query.trim()) { setSearchResults([]); return; }
+    setIsSearching(true);
+    try {
+      const results = await searchKakaoPlaces(query);
+      setSearchResults(results);
+    } catch {
+      // 실패 시 조용히 처리
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  const handleSearchChange = useCallback((text: string) => {
+    setSearchQuery(text);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => fetchPlaces(text), 400);
+  }, [fetchPlaces]);
+
+  const handleSearchSubmit = useCallback(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    fetchPlaces(searchQuery);
+  }, [fetchPlaces, searchQuery]);
+
+  // 검색 결과 선택 → MapDetail 이동
+  const handlePlaceSelect = useCallback(
+    (place: KakaoPlace) => {
+      setSearchQuery("");
+      setSearchResults([]);
+      nav.navigate("MapDetail", {
+        destinationName: place.name,
+        destinationLat: place.lat,
+        destinationLng: place.lng,
       });
     },
     [nav]
@@ -306,11 +359,48 @@ export default function SearchScreen() {
             style={styles.input}
             placeholder="어디로 갈까요?"
             placeholderTextColor="rgba(93,96,92,0.5)"
+            value={searchQuery}
+            onChangeText={handleSearchChange}
+            onSubmitEditing={handleSearchSubmit}
+            returnKeyType="search"
           />
-          <Pressable style={{ position: "absolute", right: 20, top: 20 }}>
-            <Ionicons name="mic-outline" size={20} color={Colors.textSecondary} />
-          </Pressable>
+          {isSearching ? (
+            <ActivityIndicator
+              size="small"
+              color={Colors.textSecondary}
+              style={{ position: "absolute", right: 20, top: 20 }}
+            />
+          ) : (
+            <Pressable style={{ position: "absolute", right: 20, top: 20 }} onPress={handleSearchSubmit}>
+              <Ionicons name="search-outline" size={20} color={Colors.textSecondary} />
+            </Pressable>
+          )}
         </View>
+
+        {/* 장소 검색 결과 */}
+        {searchQuery.trim().length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>검색 결과</Text>
+            {searchResults.length === 0 && !isSearching && (
+              <Text style={styles.emptyText}>검색 결과가 없습니다</Text>
+            )}
+            {searchResults.map((place) => (
+              <Pressable
+                key={place.id}
+                style={styles.recentItem}
+                onPress={() => handlePlaceSelect(place)}
+              >
+                <View style={styles.recentIcon}>
+                  <Ionicons name="location-outline" size={16} color={Colors.textSecondary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.recentName} numberOfLines={1}>{place.name}</Text>
+                  <Text style={styles.recentAddr} numberOfLines={1}>{place.address}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {/* 즐겨찾기 칩 */}
         {isFavLoading && <ActivityIndicator color={Colors.primary} />}

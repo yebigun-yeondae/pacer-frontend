@@ -90,7 +90,7 @@ export default function ProfileScreen() {
           </View>
           <Text style={styles.headerTitle}>{profile?.nickname ?? 'Pacer'}</Text>
         </View>
-        <Pressable><Ionicons name="settings-outline" size={18} color={Colors.textSecondary} /></Pressable>
+        <Pressable onPress={() => Alert.alert('알림', '미구현 기능입니다.')}><Ionicons name="settings-outline" size={18} color={Colors.textSecondary} /></Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -152,7 +152,7 @@ export default function ProfileScreen() {
           <View style={styles.settingRow}>
             <Text style={styles.settingLabel}>환승 알림</Text>
             <Switch
-              value={transitAlert} onValueChange={setTransitAlert}
+              value={transitAlert} onValueChange={() => Alert.alert('알림', '미구현 기능입니다.')}
               trackColor={{ false: '#e1e3de', true: Colors.primaryLight }}
               thumbColor={transitAlert ? Colors.primary : '#fff'}
             />
@@ -168,12 +168,12 @@ export default function ProfileScreen() {
           <View style={styles.settingRow}>
             <Text style={styles.settingLabel}>다크 모드</Text>
             <Switch
-              value={darkMode} onValueChange={setDarkMode}
+              value={darkMode} onValueChange={() => Alert.alert('알림', '미구현 기능입니다.')}
               trackColor={{ false: '#e1e3de', true: Colors.primaryLight }}
               thumbColor={darkMode ? Colors.primary : '#fff'}
             />
           </View>
-          <Pressable style={styles.settingRow}>
+          <Pressable style={styles.settingRow} onPress={() => Alert.alert('알림', '미구현 기능입니다.')}>
             <Text style={styles.settingLabel}>지도 스타일</Text>
             <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
           </Pressable>

@@ -9,12 +9,48 @@ export interface RouteRequest {
 }
 
 export interface SignalCheckpoint {
-  nodeId: number;
+  order: number;
+  crosswalkId: string;
+  intersectionId: number;
   lat: number;
   lng: number;
   etaFromStartSeconds: number;
+  signalDirection: string;
+  remainingSeconds: number | null;
   signalState: "GREEN" | "RED";
-  recommendedPace: "NORMAL" | "SPEED_UP" | "SLOW_DOWN";
+}
+
+export interface SignalCycle {
+  redMaxSec: number | null;
+  greenMaxSec: number | null;
+}
+
+// 교차로별 신호 데이터. 서버는 사용자가 실제로 건너는 방향의 필드만 채워서 내려주고,
+// 나머지 방향 필드는 null로 옴.
+export interface IntersectionSignal {
+  order: number;
+  itstId: number;
+  name: string;
+  lat: number;
+  lng: number;
+  ntPdsgStatNm: string | null;
+  stPdsgStatNm: string | null;
+  etPdsgStatNm: string | null;
+  wtPdsgStatNm: string | null;
+  nePdsgStatNm: string | null;
+  sePdsgStatNm: string | null;
+  swPdsgStatNm: string | null;
+  nwPdsgStatNm: string | null;
+  // 잔여 시간, 단위: 1/10초(데시초). /10 하면 초.
+  ntPdsgRmdrCs: number | null;
+  stPdsgRmdrCs: number | null;
+  etPdsgRmdrCs: number | null;
+  wtPdsgRmdrCs: number | null;
+  nePdsgRmdrCs: number | null;
+  sePdsgRmdrCs: number | null;
+  swPdsgRmdrCs: number | null;
+  nwPdsgRmdrCs: number | null;
+  signalCycles: Record<string, SignalCycle> | null;
 }
 
 export interface RouteResponse {
@@ -22,6 +58,7 @@ export interface RouteResponse {
   totalTimeSeconds: number;
   totalDistanceMeters: number;
   signalCheckpoints: SignalCheckpoint[];
+  intersectionSignals: IntersectionSignal[];
 }
 
 export const PACE_SPEED_MAP: Record<string, number> = {

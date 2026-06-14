@@ -10,6 +10,53 @@ export interface AuthResponse {
   refreshToken: string;
 }
 
+export interface SignupRequest {
+  email: string;
+  password: string;
+  nickname: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export async function signup(payload: SignupRequest): Promise<AuthResponse> {
+  const res = await fetch(API.auth.signup, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || `서버 오류: ${res.status}`);
+  }
+
+  const data: AuthResponse = await res.json();
+  await storage.saveToken(data.accessToken);
+  await storage.saveRefreshToken(data.refreshToken);
+  return data;
+}
+
+export async function login(payload: LoginRequest): Promise<AuthResponse> {
+  const res = await fetch(API.auth.login, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || `서버 오류: ${res.status}`);
+  }
+
+  const data: AuthResponse = await res.json();
+  await storage.saveToken(data.accessToken);
+  await storage.saveRefreshToken(data.refreshToken);
+  return data;
+}
+
 export async function loginWithKakao(
   payload: KakaoLoginRequest,
 ): Promise<AuthResponse> {

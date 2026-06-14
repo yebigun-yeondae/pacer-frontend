@@ -13,6 +13,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Animated,
+  PanResponder,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../theme/colors";
@@ -34,6 +36,9 @@ import { navStatusStore } from "../utils/navStatus";
 import { fetchWithAuth } from "../api/fetchWithAuth";
 import { API } from "../api/config";
 import { getProfile } from "../api/profileApi";
+import { searchKakaoPlaces, KakaoPlace } from "../api/kakaoApi";
+import { haversineMeters } from "../utils/geo";
+import { useIntersectionSignals, computeIntersectionSignal } from "../utils/intersectionSignal";
 
 function decodePolyline(encoded: string): [number, number][] {
   const coords: [number, number][] = [];
@@ -61,24 +66,6 @@ function decodePolyline(encoded: string): [number, number][] {
     coords.push([lng / 1e6, lat / 1e6]);
   }
   return coords;
-}
-
-// 두 좌표 간 거리 계산 (미터)
-function haversineMeters(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
-): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // 현재 위치에서 경로(폴리라인 좌표 배열)까지의 최단 거리
@@ -114,23 +101,16 @@ function findNearestIndex(
   return nearestIdx;
 }
 
+const SHEET_COLLAPSED_Y = 260;         // 바텀시트 접힘 상태일 때 아래로 내려가는 거리(px)
+const SHEET_DRAG_THRESHOLD = 40;       // 핸들 드래그 후 상태 전환 판정 거리(px)
 const DEVIATION_THRESHOLD_METERS = 40; // 경로에서 40m 이상 벗어나면 이탈로 판단
 const REROUTE_COOLDOWN_MS = 15000;     // 재탐색 후 15초 이내 중복 실행 방지
-const SIGNAL_CYCLE = 15;               // 신호 주기(초) — isRedAtTime과 phase 계산에 공유
-const SPEED_BOOST_MPS = 1.0 / 3.6;    // 신호 통과 가능 여부 계산 시 추가 속도(1.0 km/h → m/s)
+const SPEED_BOOST_MPS = 0.15 / 3.6;   // 신호 통과 가능 여부 계산 시 추가 속도(0.15 km/h → m/s)
+const SPEED_DOWN_MPS = 0.1 / 3.6;     // 여유 있을 때 줄여서 추천하는 속도(0.1 km/h → m/s)
+const GREEN_BUFFER_SEC = 5;           // 초록불 전환/종료 전후 여유 시간(초)
 const DEFAULT_SPEED_MPS = 4800 / 3600; // 프로필 로드 실패 시 기본 보행 속도(4.8 km/h)
 
-// T초 후 신호 상태 예측 (true = 빨간불)
-function isRedAtTime(T: number, currentlyRed: boolean, countdown: number): boolean {
-  if (T <= countdown) return currentlyRed;
-  const timeAfter = T - countdown;
-  // countdown 이후 SIGNAL_CYCLE초마다 색상 전환
-  const flipped = Math.floor(timeAfter / SIGNAL_CYCLE) % 2 === 0;
-  return flipped ? !currentlyRed : currentlyRed;
-}
-
 const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY!;
-const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY!;
 
 const kakaoMapHtml = `
 <!DOCTYPE html>
@@ -213,20 +193,24 @@ const kakaoMapHtml = `
     var signalOverlays = [];
     var firstSignalOverlay = null;
 
-    function makeSignalContent(color) {
+    function makeSignalContent(state) {
+      if (state === 'UNKNOWN') {
+        return '<div style="background:#9ca3af;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;line-height:1;">?</div>';
+      }
+      var color = state === 'RED' ? '#ef4444' : '#22c55e';
       return '<div style="background:' + color + ';width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);"></div>';
     }
 
-    window.setFirstSignal = function(lat, lng, color) {
+    window.setFirstSignal = function(lat, lng, state) {
       if (firstSignalOverlay) firstSignalOverlay.setMap(null);
       var pos = new kakao.maps.LatLng(lat, lng);
-      firstSignalOverlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
+      firstSignalOverlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(state), yAnchor: 1 });
       firstSignalOverlay.setMap(map);
     };
 
-    window.updateFirstSignal = function(color) {
+    window.updateFirstSignal = function(state) {
       if (!firstSignalOverlay) return;
-      firstSignalOverlay.setContent(makeSignalContent(color));
+      firstSignalOverlay.setContent(makeSignalContent(state));
     };
 
     window.showSignalMarkers = function(signalsJson) {
@@ -235,8 +219,7 @@ const kakaoMapHtml = `
       var signals = JSON.parse(signalsJson);
       signals.forEach(function(s) {
         var pos = new kakao.maps.LatLng(s.lat, s.lng);
-        var color = s.state === 'GREEN' ? '#22c55e' : '#ef4444';
-        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(color), yAnchor: 1 });
+        var overlay = new kakao.maps.CustomOverlay({ position: pos, content: makeSignalContent(s.state), yAnchor: 1 });
         overlay.setMap(map);
         signalOverlays.push(overlay);
       });
@@ -248,13 +231,6 @@ const kakaoMapHtml = `
 
 const { width, height } = Dimensions.get("window");
 
-type PlaceResult = {
-  id: string;
-  name: string;
-  address: string;
-  lat: string;
-  lng: string;
-};
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
@@ -263,6 +239,7 @@ export default function MapScreen() {
   const route = useRoute<NativeStackScreenProps<RootStackParamList, 'MapDetail'>['route']>();
   const incomingDest = (route.params as RootStackParamList['MapDetail']) ?? undefined;
   const [sheetExpanded, setSheetExpanded] = useState(false);
+  const sheetAnim = useRef(new Animated.Value(SHEET_COLLAPSED_Y)).current;
   const [routeData, setRouteData] = useState<RouteResponse | null>(null);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const webviewRef = useRef<WebView>(null);
@@ -275,7 +252,7 @@ export default function MapScreen() {
   const [activeField, setActiveField] = useState<"origin" | "dest">("dest");
   const [originQuery, setOriginQuery] = useState("");
   const [destQuery, setDestQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [searchResults, setSearchResults] = useState<KakaoPlace[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [origin, setOrigin] = useState<{
     name: string;
@@ -287,17 +264,14 @@ export default function MapScreen() {
     lat: number;
     lng: number;
   } | null>(null);
-  const [selectedOrigin, setSelectedOrigin] = useState<PlaceResult | null>(
-    null,
-  );
-  const [selectedDest, setSelectedDest] = useState<PlaceResult | null>(null);
+  const [selectedOrigin, setSelectedOrigin] = useState<KakaoPlace | null>(null);
+  const [selectedDest, setSelectedDest] = useState<KakaoPlace | null>(null);
   const [routeSteps, setRouteSteps] = useState<NavStep[]>([]);
-  const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [routeCoords, setRouteCoords] = useState<[number, number][]>([]);
   const [isRerouting, setIsRerouting] = useState(false);
+  const [polylineFixed, setPolylineFixed] = useState(false);
   const [hasEnteredRoute, setHasEnteredRoute] = useState(false);
   const lastRerouteRef = useRef<number>(0);
   const destinationRef = useRef<{
@@ -315,6 +289,8 @@ export default function MapScreen() {
   const hasEnteredRouteRef = useRef<boolean>(false);
   const isOnRouteRef = useRef<boolean>(false);
   const pendingEntryRef = useRef<boolean>(false);
+  // 경로 이탈 시 "재탐색 안함"을 선택하면 폴리라인을 더 이상 줄이지 않고 고정
+  const polylineFixedRef = useRef<boolean>(false);
 
   // ── 속도 업데이트용 누적 데이터 ─────────────────────────────────────────
   const navStartTimeRef   = useRef<number>(0);
@@ -347,8 +323,8 @@ export default function MapScreen() {
       id:      'preset',
       name:    incomingDest.destinationName,
       address: incomingDest.destinationName,
-      lat:     String(incomingDest.destinationLat),
-      lng:     String(incomingDest.destinationLng),
+      lat:     incomingDest.destinationLat,
+      lng:     incomingDest.destinationLng,
     });
     setActiveField('dest');
     setSearchVisible(true);
@@ -375,26 +351,37 @@ export default function MapScreen() {
     `);
   }, [mapLoaded, initialLocation]);
 
-  useEffect(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (routeData) {
-      setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [routeData]);
-
-  const firstSignal = routeData?.signalCheckpoints[0] ?? null;
-  const firstStartsRed = firstSignal?.signalState === "RED";
-  const phase = Math.floor(elapsed / SIGNAL_CYCLE) % 2;
-  const isCurrentlyRed = firstStartsRed ? phase === 0 : phase === 1;
-  const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
+  // ── 교차로 신호 상태 (1초마다 갱신, 경로가 있을 때만 동작) ────────────────
+  const { elapsed, signals: computedSignals } = useIntersectionSignals(
+    routeData?.intersectionSignals,
+    routeData?.signalCheckpoints,
+    !!routeData,
+  );
+  const firstSignal = computedSignals[0] ?? null;
+  const firstCheckpoint = routeData?.signalCheckpoints?.[0] ?? null;
+  const firstRawSignal =
+    routeData?.intersectionSignals?.find((s) => s.itstId === firstCheckpoint?.intersectionId) ?? null;
+  const isCurrentlyRed = firstSignal?.status === "RED";
+  const isSignalUnknown = !firstSignal || firstSignal.status === "UNKNOWN";
+  const signalCountdown = firstSignal?.remainingSec ?? null;
 
   // ── 신호 통과 가능 여부 동적 계산 ────────────────────────────────────────
-  const signalPaceMsg = React.useMemo(() => {
-    if (!firstSignal) return null;
+  const [signalPaceMsg, setSignalPaceMsg] = useState<string | null>(null);
+  const [recommendedSpeedMps, setRecommendedSpeedMps] = useState<number>(avgSpeedMps);
+  const rerouteAskedRef = useRef<number | null>(null); // 재탐색 여부를 이미 물어본 itstId
+
+  // 신호 변경 시 추천 속도/재탐색 질문 여부 초기화
+  useEffect(() => {
+    setRecommendedSpeedMps(avgSpeedMps);
+    rerouteAskedRef.current = null;
+  }, [firstSignal?.itstId, avgSpeedMps]);
+
+  // 신호 통과 가능 여부에 따라 안내 문구/추천 속도를 갱신하거나, 통과가 어려우면 재탐색을 제안
+  useEffect(() => {
+    if (!firstSignal || !firstCheckpoint || isSignalUnknown) {
+      setSignalPaceMsg(null);
+      return;
+    }
 
     // 사용자가 폴리라인 위(10m 이내)일 때만 계산
     const onPolyline =
@@ -404,34 +391,127 @@ export default function MapScreen() {
 
     if (!onPolyline || !userLocation) {
       // 폴리라인 밖이거나 위치 미확인 → 기본 메시지
-      return isCurrentlyRed
-        ? '빠르게 걸으면 초록불에 통과할 수 있어요'
-        : '지금 출발하면 신호에 걸리지 않아요';
+      setSignalPaceMsg(
+        isCurrentlyRed
+          ? '빠르게 걸으면 초록불에 통과할 수 있어요'
+          : '지금 출발하면 신호에 걸리지 않아요',
+      );
+      return;
     }
 
     const dist = haversineMeters(userLocation.lat, userLocation.lng, firstSignal.lat, firstSignal.lng);
-    const etaNormal = dist / avgSpeedMps;                    // 사용자 실제 속도 기준
-    const etaFast   = dist / (avgSpeedMps + SPEED_BOOST_MPS); // +1.0 km/h 기준
+    const etaNormal = dist / avgSpeedMps;                     // 사용자 평균 보행 속도 기준
+    const etaFast   = dist / (avgSpeedMps + SPEED_BOOST_MPS); // 속도를 조금 높였을 때
 
-    const redAtNormal = isRedAtTime(etaNormal, isCurrentlyRed, signalCountdown);
-    const redAtFast   = isRedAtTime(etaFast,   isCurrentlyRed, signalCountdown);
+    const sigAtNormal = computeIntersectionSignal(firstRawSignal, firstCheckpoint, elapsed + etaNormal);
 
-    if (!redAtNormal) {
-      return `현재 속도(${(avgSpeedMps * 3.6).toFixed(1)} km/h)로 걸으면 신호를 통과할 수 있어요`;
-    } else if (!redAtFast) {
-      return `${(SPEED_BOOST_MPS * 3.6).toFixed(1)} km/h 속도를 높이면 신호를 통과할 수 있어요`;
+    // 도착 시점에 초록불이고 5초 이상 여유가 있거나, 빨간불이 5초 이내에 끝나는 경우 → 통과 가능
+    const canCross = (sig: { status: string; remainingSec: number | null }) =>
+      (sig.status === "GREEN" && sig.remainingSec !== null && sig.remainingSec >= GREEN_BUFFER_SEC) ||
+      (sig.status === "RED" && sig.remainingSec !== null && sig.remainingSec <= GREEN_BUFFER_SEC);
+
+    const askReroute = () => {
+      const key = firstSignal.itstId;
+      if (rerouteAskedRef.current === key) return;
+      rerouteAskedRef.current = key;
+      Alert.alert(
+        "신호 통과 어려움",
+        "현재 속도로는 다음 신호를 통과하기 어려워요.\n현재 위치로 경로를 재탐색할까요?",
+        [
+          {
+            text: "아니오",
+            style: "cancel",
+            onPress: () => setSignalPaceMsg("천천히 걸으셔도 되요."),
+          },
+          { text: "예", onPress: handleManualReroute },
+        ],
+      );
+    };
+
+    if (isCurrentlyRed) {
+      if (canCross(sigAtNormal)) {
+        setRecommendedSpeedMps(avgSpeedMps);
+        setSignalPaceMsg("현재 속도로 건널 수 있어요");
+      } else if (sigAtNormal.status === "RED" && sigAtNormal.remainingSec !== null && sigAtNormal.remainingSec > GREEN_BUFFER_SEC) {
+        // 여유 있게 도착 → 속도를 낮춰서 추천
+        setRecommendedSpeedMps(Math.max(0, avgSpeedMps - SPEED_DOWN_MPS));
+        setSignalPaceMsg("조금 천천히 걸어도 도착해요.");
+      } else {
+        const sigAtFast = computeIntersectionSignal(firstRawSignal, firstCheckpoint, elapsed + etaFast);
+        if (canCross(sigAtFast)) {
+          setRecommendedSpeedMps(avgSpeedMps + SPEED_BOOST_MPS);
+          setSignalPaceMsg("속도를 높여야 건널 수 있어요");
+        } else {
+          askReroute();
+        }
+      }
     } else {
-      return '이번 신호 통과가 어려워요. 잠시 기다리세요';
+      // 현재 초록불: 도착 시점까지 초록불이 유지되는지만 확인
+      if (sigAtNormal.status === "GREEN") {
+        setRecommendedSpeedMps(avgSpeedMps);
+        setSignalPaceMsg("현재 속도로 건널 수 있어요");
+      } else {
+        const sigAtFast = computeIntersectionSignal(firstRawSignal, firstCheckpoint, elapsed + etaFast);
+        if (sigAtFast.status === "GREEN") {
+          setRecommendedSpeedMps(avgSpeedMps + SPEED_BOOST_MPS);
+          setSignalPaceMsg("속도를 높여야 건널 수 있어요");
+        } else {
+          askReroute();
+        }
+      }
     }
-  }, [firstSignal, userLocation, isCurrentlyRed, signalCountdown, routeCoords, avgSpeedMps]);
+  }, [firstSignal, firstRawSignal, firstCheckpoint, isSignalUnknown, isCurrentlyRed, userLocation, elapsed, routeCoords, avgSpeedMps]);
 
+  // ── 교차로 신호 마커(지도) 갱신 — 1초마다 ───────────────────────────────
   useEffect(() => {
-    if (!firstSignal) return;
-    const color = isCurrentlyRed ? "#ef4444" : "#22c55e";
-    webviewRef.current?.injectJavaScript(
-      `window.updateFirstSignal(${JSON.stringify(color)}); true;`,
-    );
-  }, [phase]);
+    if (!routeData?.signalCheckpoints?.length) return;
+    const [first, ...rest] = computedSignals;
+    if (first) {
+      webviewRef.current?.injectJavaScript(
+        `window.updateFirstSignal(${JSON.stringify(first.status)}); true;`,
+      );
+    }
+    if (rest.length > 0) {
+      const others = rest.map((c) => ({ lat: c.lat, lng: c.lng, state: c.status }));
+      webviewRef.current?.injectJavaScript(
+        `window.showSignalMarkers(${JSON.stringify(JSON.stringify(others))}); true;`,
+      );
+    }
+  }, [computedSignals]);
+
+  // ── 바텀시트 펼침/접힘 애니메이션 + 핸들 드래그 ─────────────────────────
+  useEffect(() => {
+    Animated.timing(sheetAnim, {
+      toValue: sheetExpanded ? 0 : SHEET_COLLAPSED_Y,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [sheetExpanded]);
+
+  const sheetPanResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 5 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderMove: (_, g) => {
+        const base = sheetExpanded ? 0 : SHEET_COLLAPSED_Y;
+        const next = Math.max(0, Math.min(SHEET_COLLAPSED_Y, base + g.dy));
+        sheetAnim.setValue(next);
+      },
+      onPanResponderRelease: (_, g) => {
+        let expand = sheetExpanded;
+        if (g.dy > SHEET_DRAG_THRESHOLD) {
+          expand = false; // 핸들을 누른 채 아래로 스크롤 → 접힘
+        } else if (g.dy < -SHEET_DRAG_THRESHOLD) {
+          expand = true; // 핸들을 누른 채 위로 스크롤 → 펼침
+        }
+        Animated.timing(sheetAnim, {
+          toValue: expand ? 0 : SHEET_COLLAPSED_Y,
+          duration: 180,
+          useNativeDriver: true,
+        }).start();
+        if (expand !== sheetExpanded) setSheetExpanded(expand);
+      },
+    }),
+  ).current;
 
   // destination 상태를 ref로 동기화 (subscription 콜백 내 stale closure 방지)
   useEffect(() => {
@@ -447,6 +527,28 @@ export default function MapScreen() {
       navStatusStore.set(hasEnteredRoute ? 'navigating' : 'measuring');
     }
   }, [isRerouting, isNavigating, hasEnteredRoute]);
+
+  // 폴리라인 고정(재탐색 거부) 상태에서 사용자가 직접 재탐색 요청
+  const handleManualReroute = async () => {
+    const dest = destinationRef.current;
+    const pos = navLastGpsPosRef.current ?? userLocation;
+    if (!dest || !pos) return;
+
+    setIsRerouting(true);
+    try {
+      const newRoute = await searchRoute({
+        origin: { lat: pos.lat, lng: pos.lng },
+        destination: { lat: dest.lat, lng: dest.lng },
+        originName: "현재 위치",
+        destinationName: dest.name,
+      });
+      applyRoute(newRoute, false);
+    } catch {
+      Alert.alert("재탐색 실패", "잠시 후 다시 시도해주세요.");
+    } finally {
+      setIsRerouting(false);
+    }
+  };
 
   // 경로 이탈 감지 — isNavigating 중에만 실행
   useEffect(() => {
@@ -492,11 +594,16 @@ export default function MapScreen() {
             })(); true;
           `);
 
-          // ── 경로 진행 표시 (applyRoute와 동일한 직접 inject 방식) ────────
+          // ── 경로 진행 표시 (사용자 위치를 시작점으로 매번 갱신) ──────────
           const nearestIdx = findNearestIndex(latitude, longitude, routeCoords);
           if (nearestIdx > lastNearestIdxRef.current) {
             lastNearestIdxRef.current = nearestIdx;
-            const remaining = routeCoords.slice(nearestIdx);
+          }
+          if (!polylineFixedRef.current) {
+            const remaining: [number, number][] = [
+              [longitude, latitude],
+              ...routeCoords.slice(lastNearestIdxRef.current + 1),
+            ];
             if (remaining.length > 1) {
               webviewRef.current?.injectJavaScript(`
                 (function() {
@@ -565,6 +672,10 @@ export default function MapScreen() {
                         text: "아니오",
                         style: "cancel",
                         // pendingEntryRef = true 유지 → 경로 재진입 전까지 Alert 없음
+                        onPress: () => {
+                          polylineFixedRef.current = true; // 폴리라인 고정, 더 이상 줄어들지 않음
+                          setPolylineFixed(true);
+                        },
                       },
                       {
                         text: "예",
@@ -622,20 +733,8 @@ export default function MapScreen() {
     searchTimer.current = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const res = await fetch(
-          `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(text)}&size=8`,
-          { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
-        );
-        const json = await res.json();
-        setSearchResults(
-          (json.documents ?? []).map((p: any) => ({
-            id: p.id,
-            name: p.place_name,
-            address: p.road_address_name || p.address_name,
-            lat: p.y,
-            lng: p.x,
-          })),
-        );
+        const results = await searchKakaoPlaces(text, 8);
+        setSearchResults(results);
       } catch {
         setSearchResults([]);
       } finally {
@@ -644,17 +743,15 @@ export default function MapScreen() {
     }, 350);
   };
 
-  const handleSelectResult = (item: PlaceResult) => {
+  const handleSelectResult = (item: KakaoPlace) => {
     if (activeField === "origin") {
       setSelectedOrigin(item);
       setOriginQuery(item.name);
     } else {
       setSelectedDest(item);
       setDestQuery(item.name);
-      const lat = parseFloat(item.lat);
-      const lng = parseFloat(item.lng);
       webviewRef.current?.injectJavaScript(
-        `window.showDestination(${lat}, ${lng}); true;`,
+        `window.showDestination(${item.lat}, ${item.lng}); true;`,
       );
     }
     setSearchResults([]);
@@ -678,6 +775,8 @@ export default function MapScreen() {
     setRouteData(route);
     setRouteCoords(coordinates); // 이탈 감지를 위해 저장
     lastNearestIdxRef.current = 0; // 새 경로 시작 시 진행 인덱스 초기화
+    polylineFixedRef.current = false; // 새 경로 시작 시 폴리라인 고정 해제
+    setPolylineFixed(false);
     // 새 경로가 적용될 때마다 이탈 상태 머신 + 속도 누적 초기화
     hasEnteredRouteRef.current = false;
     isOnRouteRef.current = false;
@@ -688,8 +787,8 @@ export default function MapScreen() {
     navTotalDistRef.current = 0;
     navLastGpsPosRef.current = null;
     setRouteSteps([]);
-    // 경로 탐색 완료 시 지도가 보이도록 시트를 접어둠 (핸들 클릭으로 펼칠 수 있음)
-    setSheetExpanded(false);
+    // 경로 탐색 완료 시 경로 안내 버튼이 보이도록 시트를 펼친 상태로 표시
+    setSheetExpanded(true);
 
     // window.drawRoute 함수 호출 대신 JS를 직접 inject
     // (이중 직렬화 없이 좌표를 JSON 리터럴로 직접 전달 → 파싱 오류 방지)
@@ -729,18 +828,18 @@ export default function MapScreen() {
       true;
     `);
     if (route.signalCheckpoints.length > 0) {
-      const first = route.signalCheckpoints[0];
-      const rest = route.signalCheckpoints.slice(1);
-      const firstColor = first.signalState === "RED" ? "#ef4444" : "#22c55e";
+      const [first, ...rest] = [...route.signalCheckpoints].sort((a, b) => a.order - b.order);
+      const firstSig = route.intersectionSignals.find((s) => s.itstId === first.intersectionId);
+      const firstComputed = computeIntersectionSignal(firstSig, first, 0);
       webviewRef.current?.injectJavaScript(
-        `window.setFirstSignal(${first.lat}, ${first.lng}, ${JSON.stringify(firstColor)}); true;`,
+        `window.setFirstSignal(${firstComputed.lat}, ${firstComputed.lng}, ${JSON.stringify(firstComputed.status)}); true;`,
       );
       if (rest.length > 0) {
-        const others = rest.map((c) => ({
-          lat: c.lat,
-          lng: c.lng,
-          state: c.signalState,
-        }));
+        const others = rest.map((checkpoint) => {
+          const sig = route.intersectionSignals.find((s) => s.itstId === checkpoint.intersectionId);
+          const computed = computeIntersectionSignal(sig, checkpoint, 0);
+          return { lat: computed.lat, lng: computed.lng, state: computed.status };
+        });
         webviewRef.current?.injectJavaScript(
           `window.showSignalMarkers(${JSON.stringify(JSON.stringify(others))}); true;`,
         );
@@ -750,14 +849,14 @@ export default function MapScreen() {
 
   const handleConfirmDestination = async () => {
     if (!selectedDest) return;
-    const destLat = parseFloat(selectedDest.lat);
-    const destLng = parseFloat(selectedDest.lng);
+    const destLat = selectedDest.lat;
+    const destLng = selectedDest.lng;
 
     let originLat = selectedOrigin
-      ? parseFloat(selectedOrigin.lat)
+      ? selectedOrigin.lat
       : initialLocation?.latitude;
     let originLng = selectedOrigin
-      ? parseFloat(selectedOrigin.lng)
+      ? selectedOrigin.lng
       : initialLocation?.longitude;
     const originName = selectedOrigin?.name ?? "현재 위치";
 
@@ -791,6 +890,8 @@ export default function MapScreen() {
         originName,
         destinationName: selectedDest.name,
       });
+      // TODO: 디버깅용 — 확인 후 제거
+      Alert.alert("경로 탐색 응답", JSON.stringify(route, null, 2).slice(0, 2000));
       applyRoute(route);
     } catch (e: any) {
       Alert.alert("경로 탐색 실패", e.message ?? String(e));
@@ -814,7 +915,7 @@ export default function MapScreen() {
         slopeDeg:  0.0,  // 경사도 미구현 — 0으로 고정
       }];
       fetchWithAuth(API.profile.updateSpeed, {
-        method: 'POST',
+        method: 'PATCH',
         body: JSON.stringify({ segments }),
       }).catch(() => {}); // 실패 시 무시
     }
@@ -1128,14 +1229,25 @@ export default function MapScreen() {
               </View>
             </View>
             {/* 신호 통과 가능 여부 */}
-            {firstSignal && signalPaceMsg && (
+            {firstSignal && (signalPaceMsg || isSignalUnknown) && (
               <View style={styles.navSignalRow}>
-                <View style={[styles.navSignalDot, { backgroundColor: isCurrentlyRed ? "#ef4444" : "#22c55e" }]} />
-                <Text style={styles.navSignalText} numberOfLines={2}>{signalPaceMsg}</Text>
+                <View style={[styles.navSignalDot, { backgroundColor: isSignalUnknown ? "#9ca3af" : isCurrentlyRed ? "#ef4444" : "#22c55e" }]} />
+                <Text style={styles.navSignalText} numberOfLines={2}>
+                  {signalPaceMsg ?? '신호 정보를 확인할 수 없어요'}
+                </Text>
               </View>
             )}
           </View>
           <View style={{ gap: 10, alignItems: 'center' }}>
+            {polylineFixed && (
+              <Pressable onPress={handleManualReroute} disabled={isRerouting}>
+                <Ionicons
+                  name="refresh-circle"
+                  size={26}
+                  color={isRerouting ? Colors.textMuted : Colors.brown}
+                />
+              </Pressable>
+            )}
             <Pressable
               onPress={() => destination && routeData && nav.navigate("Safety", {
                 routeData,
@@ -1166,21 +1278,28 @@ export default function MapScreen() {
           const time = formatRemainingTime(routeData.totalTimeSeconds);
           const distanceStr = formatDistance(routeData.totalDistanceMeters);
           const distText = "전방";
-          const signalMsg = signalPaceMsg ?? (isCurrentlyRed
-            ? '빠르게 걸으면 초록불에 통과할 수 있어요'
-            : '지금 출발하면 신호에 걸리지 않아요');
+          const signalMsg = signalPaceMsg ?? (isSignalUnknown
+            ? '신호 정보를 확인할 수 없어요'
+            : isCurrentlyRed
+              ? '빠르게 걸으면 초록불에 통과할 수 있어요'
+              : '지금 출발하면 신호에 걸리지 않아요');
           return (
-            <View
+            <Animated.View
               style={[
                 styles.sheet,
-                !sheetExpanded && { transform: [{ translateY: 260 }] },
+                { transform: [{ translateY: sheetAnim }] },
                 { paddingBottom: 32 + insets.bottom + tabBarHeight },
               ]}
             >
-              <Pressable
-                style={styles.sheetHandle}
-                onPress={() => setSheetExpanded(!sheetExpanded)}
-              />
+              <View
+                style={styles.sheetHandleArea}
+                {...sheetPanResponder.panHandlers}
+              >
+                <Pressable
+                  style={styles.sheetHandle}
+                  onPress={() => setSheetExpanded(!sheetExpanded)}
+                />
+              </View>
               <View style={styles.navSummary}>
                 <View>
                   <Text style={styles.timeLabel}>남은 도착 시간</Text>
@@ -1204,24 +1323,30 @@ export default function MapScreen() {
                 <View
                   style={[
                     styles.signalCard,
-                    { borderColor: isCurrentlyRed ? "#ef4444" : "#22c55e" },
+                    { borderColor: isSignalUnknown ? "#9ca3af" : isCurrentlyRed ? "#ef4444" : "#22c55e" },
                   ]}
                 >
                   <View
                     style={[
                       styles.signalDot,
                       {
-                        backgroundColor: isCurrentlyRed ? "#ef4444" : "#22c55e",
+                        backgroundColor: isSignalUnknown ? "#9ca3af" : isCurrentlyRed ? "#ef4444" : "#22c55e",
                       },
                     ]}
-                  />
+                  >
+                    {isSignalUnknown && <Text style={styles.signalDotMark}>?</Text>}
+                  </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.signalTitle}>
-                      {isCurrentlyRed ? "🔴 빨간불" : "🟢 초록불"}
-                      {"  "}
-                      <Text style={styles.signalCountdown}>
-                        {distText} · {signalCountdown}초 후 전환
-                      </Text>
+                      {isSignalUnknown ? "❔ 신호 확인 중" : isCurrentlyRed ? "🔴 빨간불" : "🟢 초록불"}
+                      {!isSignalUnknown && (
+                        <>
+                          {"  "}
+                          <Text style={styles.signalCountdown}>
+                            {distText} · {signalCountdown}초 후 전환
+                          </Text>
+                        </>
+                      )}
                     </Text>
                     <Text style={styles.signalPace}>{signalMsg}</Text>
                   </View>
@@ -1234,7 +1359,7 @@ export default function MapScreen() {
                     <Ionicons name="flash" size={14} color={Colors.primary} />
                     <Text style={styles.statLabel}>권장 속도</Text>
                   </View>
-                  <Text style={styles.statValue}>{(avgSpeedMps * 3.6).toFixed(1)} km/h로{"\n"}걸으세요</Text>
+                  <Text style={styles.statValue}>{(recommendedSpeedMps * 3.6).toFixed(1)} km/h로{"\n"}걸으세요</Text>
                 </View>
                 <View style={styles.statCard}>
                   <View style={styles.statHeader}>
@@ -1322,7 +1447,7 @@ export default function MapScreen() {
               >
                 <Text style={styles.cancelBtnText}>취소하기</Text>
               </Pressable>
-            </View>
+            </Animated.View>
           );
         })()}
     </View>
@@ -1412,13 +1537,15 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 10,
   },
+  sheetHandleArea: {
+    paddingVertical: 12,
+    alignItems: "center",
+  },
   sheetHandle: {
     width: 48,
     height: 4,
     backgroundColor: "#d1d5db",
     borderRadius: 2,
-    alignSelf: "center",
-    marginVertical: 16,
   },
 
   navSummary: {
@@ -1691,7 +1818,8 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     backgroundColor: "#fafafa",
   },
-  signalDot: { width: 12, height: 12, borderRadius: 6 },
+  signalDot: { width: 12, height: 12, borderRadius: 6, alignItems: "center", justifyContent: "center" },
+  signalDotMark: { fontSize: 9, fontWeight: "700", color: "#fff", lineHeight: 11 },
   signalTitle: {
     fontSize: 14,
     fontWeight: "600",

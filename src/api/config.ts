@@ -3,13 +3,15 @@ const BASE_URL = process.env.EXPO_PUBLIC_BASE_URL!;
 export const API = {
   auth: {
     kakaoLogin: `${BASE_URL}/api/v1/auth/kakao`,    // POST   — 카카오 토큰 → 서버 JWT
+    signup:     `${BASE_URL}/api/v1/auth/signup`,   // POST   — 일반 회원가입
+    login:      `${BASE_URL}/api/v1/auth/login`,    // POST   — 일반 로그인
     reissue:    `${BASE_URL}/api/v1/auth/reissue`,  // POST   — JWT 갱신
     logout:     `${BASE_URL}/api/v1/auth/logout`,   // POST   — 로그아웃
     withdraw:   `${BASE_URL}/api/v1/auth/withdraw`, // DELETE — 회원 탈퇴
   },
   profile: {
     get:         `${BASE_URL}/api/v1/profile`,       // GET  — 프로필 조회
-    updateSpeed: `${BASE_URL}/api/v1/profile/walking-speed`, // POST — 사용자 속도 업데이트
+    updateSpeed: `${BASE_URL}/api/v1/profile/walking-speed`, // PATCH — 사용자 속도 업데이트
   },
   routes: {
     search:  `${BASE_URL}/api/v1/routes`,         // POST — 경로 탐색

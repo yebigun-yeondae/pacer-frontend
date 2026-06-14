@@ -14,7 +14,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as KakaoLogin from "@react-native-seoul/kakao-login";
 import { Colors } from "../theme/colors";
-import { loginWithKakao } from "../api/authApi";
+import { loginWithKakao, login, signup } from "../api/authApi";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/AppNavigator";
 
@@ -24,14 +24,51 @@ type Props = {
 
 export default function AuthScreen({ navigation }: Props) {
   const [isLogin, setIsLogin] = useState(true);
+  const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = () => {
-    Alert.alert("준비 중", "현재 카카오 로그인만 지원합니다.");
+  const handleSubmit = async () => {
+    if (isLogin) {
+      if (!email || !password) {
+        Alert.alert("입력 오류", "이메일과 비밀번호를 모두 입력해주세요.");
+        return;
+      }
+
+      try {
+        setSubmitting(true);
+        await login({ email, password });
+        navigation.replace("MainTabs");
+      } catch (err: any) {
+        Alert.alert("로그인 실패", err.message || "로그인에 실패했습니다.");
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    if (!nickname || !email || !password || !passwordConfirm) {
+      Alert.alert("입력 오류", "닉네임, 아이디, 비밀번호, 비밀번호 확인을 모두 입력해주세요.");
+      return;
+    }
+    if (password !== passwordConfirm) {
+      Alert.alert("입력 오류", "비밀번호와 비밀번호 확인이 일치하지 않습니다.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await signup({ email, password, nickname });
+      navigation.replace("MainTabs");
+    } catch (err: any) {
+      Alert.alert("회원가입 실패", err.message || "회원가입에 실패했습니다.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleSocialLogin = async (provider: string) => {
@@ -78,8 +115,9 @@ export default function AuthScreen({ navigation }: Props) {
     Alert.alert(`${provider} 로그인`, "준비 중입니다.");
   };
 
-  const switchTab = (login: boolean) => {
-    setIsLogin(login);
+  const switchTab = (loginTab: boolean) => {
+    setIsLogin(loginTab);
+    setNickname("");
     setEmail("");
     setPassword("");
     setPasswordConfirm("");
@@ -139,6 +177,18 @@ export default function AuthScreen({ navigation }: Props) {
 
           {/* Form */}
           <View style={styles.form}>
+            {!isLogin && (
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>닉네임</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="닉네임"
+                  placeholderTextColor={Colors.textMuted}
+                  value={nickname}
+                  onChangeText={setNickname}
+                />
+              </View>
+            )}
             <View style={styles.formGroup}>
               <Text style={styles.formLabel}>이메일 주소</Text>
               <TextInput
@@ -207,13 +257,18 @@ export default function AuthScreen({ navigation }: Props) {
             <Pressable
               style={({ pressed }) => [
                 styles.submitBtn,
-                pressed && { opacity: 0.9 },
+                (pressed || submitting) && { opacity: 0.9 },
               ]}
               onPress={handleSubmit}
+              disabled={submitting}
             >
-              <Text style={styles.submitText}>
-                {isLogin ? "로그인" : "회원가입"}
-              </Text>
+              {submitting ? (
+                <ActivityIndicator size="small" color={Colors.primaryText} />
+              ) : (
+                <Text style={styles.submitText}>
+                  {isLogin ? "로그인" : "회원가입"}
+                </Text>
+              )}
             </Pressable>
           </View>
 

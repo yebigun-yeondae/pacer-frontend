@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView,
   Modal, FlatList, ActivityIndicator, TouchableOpacity, Alert, TextInput,
-  Platform, Keyboard, Animated,
+  Platform, Keyboard, Animated, Dimensions, PanResponder,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
@@ -11,22 +11,15 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { fetchWithAuth } from '../api/fetchWithAuth';
 import { API } from '../api/config';
+import { searchKakaoPlaces, KakaoPlace } from '../api/kakaoApi';
+import { ICON_OPTIONS, IconKey, getPreset } from '../constants/favorites';
+import { formatCreatedAt } from '../utils/format';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY!;
-
-// ── 아이콘 옵션 ────────────────────────────────────────────────────────────────
-const ICON_OPTIONS = [
-  { key: 'home',           icon: 'home'            as const, color: Colors.primaryLight, iconColor: Colors.primary    },
-  { key: 'school-outline', icon: 'school-outline'  as const, color: Colors.brownLight,   iconColor: Colors.textDanger },
-  { key: 'briefcase-outline', icon: 'briefcase-outline' as const, color: Colors.yellow,  iconColor: Colors.brown      },
-] as const;
-
-type IconKey = typeof ICON_OPTIONS[number]['key'];
-
-// 인덱스 기반으로 아이콘 프리셋 순환 (서버에 icon 필드 없으므로)
-function getPreset(index: number) {
-  return ICON_OPTIONS[index % ICON_OPTIONS.length];
-}
+const SCREEN_HEIGHT = Dimensions.get('window').height;
+const MODAL_DEFAULT_HEIGHT = SCREEN_HEIGHT * 0.78;
+const MODAL_DRAG_THRESHOLD = 40;     // 핸들/리스트 드래그 후 상태 전환 판정 거리(px)
+const MODAL_CLOSE_THRESHOLD = 110;   // 전체화면 상태에서 닫힘으로 판정하는 드래그 거리(px)
 
 
 // ── 타입 정의 ──────────────────────────────────────────────────────────────────
@@ -51,13 +44,6 @@ interface RouteHistory {
   createdAt: string;
 }
 
-interface KakaoPlace {
-  place_name: string;
-  address_name: string;
-  road_address_name: string;
-  x: string; // lng
-  y: string; // lat
-}
 
 interface PendingPlace {
   name: string;
@@ -66,19 +52,11 @@ interface PendingPlace {
   lng: number;
 }
 
-function formatCreatedAt(iso: string): string {
-  const d = new Date(iso);
-  const yyyy = d.getFullYear();
-  const mm   = String(d.getMonth() + 1).padStart(2, '0');
-  const dd   = String(d.getDate()).padStart(2, '0');
-  const hh   = String(d.getHours()).padStart(2, '0');
-  const min  = String(d.getMinutes()).padStart(2, '0');
-  return `${yyyy}.${mm}.${dd} ${hh}:${min}`;
-}
-
 // ── 컴포넌트 ───────────────────────────────────────────────────────────────────
 export default function SavedScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const insets = useSafeAreaInsets();
+  const modalFullHeight = SCREEN_HEIGHT - insets.top - 12;
 
   // 즐겨찾기 목록
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
@@ -106,6 +84,60 @@ export default function SavedScreen() {
   const [searchQuery, setSearchQuery]       = useState('');
   const [searchResults, setSearchResults]   = useState<KakaoPlace[]>([]);
   const [isSearching, setIsSearching]       = useState(false);
+
+  // 모달 시트 높이 — 기본(78%) ↔ 전체화면, 핸들/리스트 드래그로 전환
+  const [sheetFull, setSheetFull] = useState(false);
+  const sheetHeightAnim = useRef(new Animated.Value(MODAL_DEFAULT_HEIGHT)).current;
+  const historyScrollYRef = useRef(0);
+
+  const animateSheetTo = useCallback((toValue: number) => {
+    Animated.timing(sheetHeightAnim, {
+      toValue,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+  }, [sheetHeightAnim]);
+
+  // 모달 어디서든 위/아래로 스크롤 → 전체화면 ↔ 기본 크기 ↔ 닫힘.
+  // 전체화면 상태에서는 리스트가 맨 위에 있을 때만 아래로 스크롤을 가로채서 축소/닫힘 처리.
+  const sheetPanResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponderCapture: (_, g) => {
+        if (Math.abs(g.dy) <= 5 || Math.abs(g.dy) <= Math.abs(g.dx)) return false;
+        if (!sheetFull) return true;
+        return g.dy > 8 && historyScrollYRef.current <= 0;
+      },
+      onPanResponderMove: (_, g) => {
+        const base = sheetFull ? modalFullHeight : MODAL_DEFAULT_HEIGHT;
+        const next = Math.max(
+          MODAL_DEFAULT_HEIGHT - MODAL_CLOSE_THRESHOLD,
+          Math.min(modalFullHeight, base - g.dy),
+        );
+        sheetHeightAnim.setValue(next);
+      },
+      onPanResponderRelease: (_, g) => {
+        if (!sheetFull) {
+          if (g.dy < -MODAL_DRAG_THRESHOLD) {
+            setSheetFull(true);
+            animateSheetTo(modalFullHeight);
+          } else if (g.dy > MODAL_DRAG_THRESHOLD) {
+            closeHistory();
+          } else {
+            animateSheetTo(MODAL_DEFAULT_HEIGHT);
+          }
+        } else {
+          if (g.dy > MODAL_CLOSE_THRESHOLD) {
+            closeHistory();
+          } else if (g.dy > MODAL_DRAG_THRESHOLD) {
+            setSheetFull(false);
+            animateSheetTo(MODAL_DEFAULT_HEIGHT);
+          } else {
+            animateSheetTo(modalFullHeight);
+          }
+        }
+      },
+    }),
+  ).current;
 
   // 키보드 오프셋 (모달 시트 위로 밀기)
   const keyboardOffset = useRef(new Animated.Value(0)).current;
@@ -152,6 +184,9 @@ export default function SavedScreen() {
     setHistoryError(null);
     setSelectedItem(null);
     setShowLabelInput(false);
+    setSheetFull(false);
+    historyScrollYRef.current = 0;
+    sheetHeightAnim.setValue(MODAL_DEFAULT_HEIGHT);
     setIsHistLoading(true);
     try {
       const res = await fetchWithAuth(API.routes.history, { method: 'GET' });
@@ -162,7 +197,7 @@ export default function SavedScreen() {
     } finally {
       setIsHistLoading(false);
     }
-  }, []);
+  }, [sheetHeightAnim]);
 
   const closeHistory = useCallback(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -231,13 +266,8 @@ export default function SavedScreen() {
     if (!query.trim()) { setSearchResults([]); return; }
     setIsSearching(true);
     try {
-      const url = `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(query.trim())}`;
-      const res = await fetch(url, {
-        headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
-      });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      setSearchResults(data.documents ?? []);
+      const results = await searchKakaoPlaces(query);
+      setSearchResults(results);
     } catch {
       // 실패 시 조용히 처리
     } finally {
@@ -276,7 +306,6 @@ export default function SavedScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View />
-        <Pressable><Ionicons name="search" size={18} color={Colors.textSecondary} /></Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -359,8 +388,13 @@ export default function SavedScreen() {
             style={[StyleSheet.absoluteFillObject, styles.modalOverlay]}
             onPress={closeHistory}
           />
-          <Animated.View style={[styles.modalSheet, { marginBottom: keyboardOffset }]}>
-          <View style={styles.modalHandle} />
+          <Animated.View
+            style={[styles.modalSheet, { height: sheetHeightAnim, marginBottom: keyboardOffset }]}
+            {...sheetPanResponder.panHandlers}
+          >
+          <View>
+            <View style={styles.modalHandle} />
+          </View>
 
           {/* 모달 헤더 */}
           <View style={styles.modalTitleRow}>
@@ -467,10 +501,14 @@ export default function SavedScreen() {
               )}
               {!isHistLoading && !historyError && historyList.length > 0 && (
                 <FlatList
+                  style={{ flex: 1 }}
                   data={historyList}
                   keyExtractor={(item) => item.id}
                   contentContainerStyle={styles.historyList}
                   showsVerticalScrollIndicator={false}
+                  scrollEnabled={sheetFull}
+                  onScroll={(e) => { historyScrollYRef.current = e.nativeEvent.contentOffset.y; }}
+                  scrollEventThrottle={16}
                   renderItem={({ item }) => (
                     <TouchableOpacity
                       style={[
@@ -540,12 +578,15 @@ export default function SavedScreen() {
                 keyExtractor={(_, i) => String(i)}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ gap: 0, paddingBottom: 8 }}
+                scrollEnabled={sheetFull}
+                onScroll={(e) => { historyScrollYRef.current = e.nativeEvent.contentOffset.y; }}
+                scrollEventThrottle={16}
                 renderItem={({ item }) => {
                   const place: PendingPlace = {
-                    name: item.place_name,
-                    address: item.road_address_name || item.address_name,
-                    lat: parseFloat(item.y),
-                    lng: parseFloat(item.x),
+                    name:    item.name,
+                    address: item.address,
+                    lat:     item.lat,
+                    lng:     item.lng,
                   };
                   return (
                     <TouchableOpacity
@@ -564,10 +605,8 @@ export default function SavedScreen() {
                     >
                       <Ionicons name="location-outline" size={16} color={Colors.primary} style={{ marginTop: 2 }} />
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.searchResultName}>{item.place_name}</Text>
-                        <Text style={styles.searchResultAddr} numberOfLines={1}>
-                          {item.road_address_name || item.address_name}
-                        </Text>
+                        <Text style={styles.searchResultName}>{item.name}</Text>
+                        <Text style={styles.searchResultAddr} numberOfLines={1}>{item.address}</Text>
                       </View>
                     </TouchableOpacity>
                   );
@@ -642,7 +681,7 @@ const styles = StyleSheet.create({
   modalSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 24, paddingBottom: 40, maxHeight: '78%',
+    paddingHorizontal: 24, paddingBottom: 40, overflow: 'hidden',
   },
   modalHandle: { width: 48, height: 4, backgroundColor: '#d1d5db', borderRadius: 2, alignSelf: 'center', marginVertical: 14 },
   modalTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },

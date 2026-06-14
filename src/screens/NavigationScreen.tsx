@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../theme/colors";
 import { useNavigation, useRoute } from "@react-navigation/native";
@@ -10,25 +10,21 @@ import { formatDistance } from "../api/routeApi";
 import type { NavStep } from "../api/routeApi";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
+import * as Notifications from "expo-notifications";
 import { navStatusStore, NavStatus } from "../utils/navStatus";
-
-function haversineMeters(
-  lat1: number, lon1: number,
-  lat2: number, lon2: number,
-): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+import { haversineMeters } from "../utils/geo";
+import { useIntersectionSignals } from "../utils/intersectionSignal";
 
 const AUTO_ADVANCE_METERS = 25;
-const SIGNAL_CYCLE = 15;
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const STATUS_LABELS: Record<NavStatus, string> = {
   navigating: '경로 안내 중',
@@ -51,19 +47,71 @@ export default function NavigationScreen() {
 
   useEffect(() => { currentStepIdxRef.current = currentStepIdx; }, [currentStepIdx]);
 
-  // 신호 타이머 (1초 단위)
-  const [elapsed, setElapsed] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const firstSignal = params?.routeData?.signalCheckpoints?.[0] ?? null;
-  const firstStartsRed = firstSignal?.signalState === "RED";
-  const phase = Math.floor(elapsed / SIGNAL_CYCLE) % 2;
-  const isCurrentlyRed = firstStartsRed ? phase === 0 : phase === 1;
-  const signalCountdown = SIGNAL_CYCLE - (elapsed % SIGNAL_CYCLE);
+  // 교차로 신호 상태 (1초마다 갱신, 경로 안내 종료까지 계속 동작)
+  const { signals: computedSignals } = useIntersectionSignals(
+    params?.routeData?.intersectionSignals,
+    params?.routeData?.signalCheckpoints,
+    true,
+  );
+  const firstSignal = computedSignals[0] ?? null;
+  const isCurrentlyRed = firstSignal?.status === "RED";
+  const isSignalUnknown = !firstSignal || firstSignal.status === "UNKNOWN";
+  const signalCountdown = firstSignal?.remainingSec ?? null;
 
+  // 신호등 알림 권한 + 채널 설정
   useEffect(() => {
-    if (!firstSignal) return;
-    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    (async () => {
+      await Notifications.requestPermissionsAsync();
+      if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("default", {
+          name: "신호등 알림",
+          importance: Notifications.AndroidImportance.HIGH,
+        });
+      }
+    })();
+  }, []);
+
+  // 다음 신호 전환 시점에 맞춰 로컬 알림 예약 (앱이 백그라운드일 때도 표시됨)
+  const scheduledSignalRef = useRef<{ key: string; id: string } | null>(null);
+  useEffect(() => {
+    if (!firstSignal || firstSignal.status === "UNKNOWN" || firstSignal.remainingSec == null) {
+      return;
+    }
+
+    const key = `${firstSignal.itstId}-${firstSignal.status}`;
+    if (scheduledSignalRef.current?.key === key) return;
+
+    const remainingSec = firstSignal.remainingSec;
+
+    (async () => {
+      if (scheduledSignalRef.current) {
+        await Notifications.cancelScheduledNotificationAsync(scheduledSignalRef.current.id);
+        scheduledSignalRef.current = null;
+      }
+
+      const nextStatusLabel = firstSignal.status === "RED" ? "초록불" : "빨간불";
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "신호등 알림",
+          body: `다음 신호가 곧 ${nextStatusLabel}로 전환됩니다. (${remainingSec}초 후)`,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+          seconds: Math.max(1, remainingSec),
+          channelId: "default",
+        },
+      });
+      scheduledSignalRef.current = { key, id };
+    })();
+  }, [firstSignal?.itstId, firstSignal?.status]);
+
+  // 화면을 벗어날 때 예약된 알림 취소
+  useEffect(() => {
+    return () => {
+      if (scheduledSignalRef.current) {
+        Notifications.cancelScheduledNotificationAsync(scheduledSignalRef.current.id).catch(() => {});
+      }
+    };
   }, []);
 
   // 잔여 거리 (GPS → 목적지 haversine, 실시간)
@@ -162,18 +210,26 @@ export default function NavigationScreen() {
 
         {/* 신호 카드 — 매초 업데이트 */}
         {firstSignal ? (
-          <View style={[styles.signalCard, { borderColor: isCurrentlyRed ? "#ef4444" : "#22c55e" }]}>
-            <View style={[styles.signalDot, { backgroundColor: isCurrentlyRed ? "#ef4444" : "#22c55e" }]} />
+          <View style={[styles.signalCard, { borderColor: isSignalUnknown ? "#9ca3af" : isCurrentlyRed ? "#ef4444" : "#22c55e" }]}>
+            <View style={[styles.signalDot, { backgroundColor: isSignalUnknown ? "#9ca3af" : isCurrentlyRed ? "#ef4444" : "#22c55e" }]}>
+              {isSignalUnknown && <Text style={styles.signalDotMark}>?</Text>}
+            </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.signalTitle}>
-                {isCurrentlyRed ? "🔴 빨간불" : "🟢 초록불"}
-                {"  "}
-                <Text style={styles.signalCountdown}>{signalCountdown}초 후 전환</Text>
+                {isSignalUnknown ? "❔ 신호 확인 중" : isCurrentlyRed ? "🔴 빨간불" : "🟢 초록불"}
+                {!isSignalUnknown && (
+                  <>
+                    {"  "}
+                    <Text style={styles.signalCountdown}>{signalCountdown}초 후 전환</Text>
+                  </>
+                )}
               </Text>
               <Text style={styles.signalDesc}>
-                {isCurrentlyRed
-                  ? "빠르게 걸으면 초록불에 통과할 수 있어요"
-                  : "지금 출발하면 신호에 걸리지 않아요"}
+                {isSignalUnknown
+                  ? "신호 정보를 확인할 수 없어요"
+                  : isCurrentlyRed
+                    ? "빠르게 걸으면 초록불에 통과할 수 있어요"
+                    : "지금 출발하면 신호에 걸리지 않아요"}
               </Text>
             </View>
           </View>
@@ -295,7 +351,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 18,
     backgroundColor: "#fafafa",
   },
-  signalDot: { width: 16, height: 16, borderRadius: 8 },
+  signalDot: { width: 16, height: 16, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  signalDotMark: { fontSize: 11, fontWeight: "700", color: "#fff", lineHeight: 13 },
   signalTitle: { fontSize: 17, fontWeight: "700", color: "#1a1a1a", marginBottom: 4 },
   signalCountdown: { fontSize: 15, fontWeight: "700", color: Colors.primary },
   signalDesc: { fontSize: 13, color: "#666" },
