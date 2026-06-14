@@ -1,4 +1,4 @@
-import { Alert } from 'react-native'; // TODO: 배포 전 삭제 (Alert import 제거)
+// import { Alert } from 'react-native'; // TODO: 배포 전 삭제 (Alert import 제거)
 import { storage } from '../utils/storage';
 import { reissueToken, logoutFromServer } from './authApi';
 import { navigateTo } from '../navigation/navigationRef';
@@ -31,7 +31,7 @@ export async function fetchWithAuth(
 
   // TODO: 배포 전 삭제 — 아래 Alert를 console.log로 교체
   // console.log(`[fetchWithAuth] ${options.method ?? 'GET'} ${url} → ${response.status}`);
-  Alert.alert('fetchWithAuth', `${options.method ?? 'GET'} → ${response.status}`);
+  // Alert.alert('fetchWithAuth', `${options.method ?? 'GET'} → ${response.status}`);
 
   if (response.status !== 401 && response.status !== 403) {
     return response;
@@ -39,19 +39,19 @@ export async function fetchWithAuth(
 
   // ── 401/403 감지: 토큰 재발급 시도 ──────────────────────────────────
   // TODO: 배포 전 삭제 — 아래 3개 Alert 제거
-  Alert.alert('fetchWithAuth', `${response.status} 감지 → 토큰 재발급 시도`);
+  // Alert.alert('fetchWithAuth', `${response.status} 감지 → 토큰 재발급 시도`);
 
   const reissued = await reissueToken();
 
   if (!reissued) {
-    Alert.alert('fetchWithAuth', '재발급 실패 → 로그아웃 처리');
+    // Alert.alert('fetchWithAuth', '재발급 실패 → 로그아웃 처리');
     await logoutFromServer();
     navigateTo('Auth');
     throw new Error('세션이 만료되었습니다. 다시 로그인해 주세요.');
   }
 
   // ── 재발급 성공: 새 토큰으로 원래 요청 재시도 ───────────────────────
-  Alert.alert('fetchWithAuth', '재발급 성공 → 원래 요청 재시도');
+  // Alert.alert('fetchWithAuth', '재발급 성공 → 원래 요청 재시도');
 
   const newToken = await storage.getToken();
 

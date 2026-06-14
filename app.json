@@ -28,7 +28,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-build-properties",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
       "expo-notifications",
       [
         "@react-native-seoul/kakao-login",

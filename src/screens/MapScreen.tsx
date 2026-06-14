@@ -891,7 +891,7 @@ export default function MapScreen() {
         destinationName: selectedDest.name,
       });
       // TODO: 디버깅용 — 확인 후 제거
-      Alert.alert("경로 탐색 응답", JSON.stringify(route, null, 2).slice(0, 2000));
+      // Alert.alert("경로 탐색 응답", JSON.stringify(route, null, 2).slice(0, 2000));
       applyRoute(route);
     } catch (e: any) {
       Alert.alert("경로 탐색 실패", e.message ?? String(e));

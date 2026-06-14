@@ -93,15 +93,17 @@ export default function AuthScreen({ navigation }: Props) {
             accessToken: kakaoResult.accessToken,
           });
           console.log("[Backend] 응답:", JSON.stringify(authData));
-          Alert.alert("로그인 성공!", `로그인되었습니다!`, [
-            { text: "확인", onPress: () => navigation.replace("MainTabs") },
-          ]);
+          navigation.replace("MainTabs");
         } catch (backendErr: any) {
           console.warn("[Backend] 로그인 실패:", backendErr.message);
           Alert.alert("로그인 실패", "서버 인증에 실패했습니다. 잠시 후 다시 시도해주세요.");
         }
       } catch (err: any) {
-        if (err.code !== "E_CANCELLED_OPERATION") {
+        const isCancelled =
+          err.code === "E_CANCELLED_OPERATION" ||
+          /cancel/i.test(err.code ?? "") ||
+          /cancel/i.test(err.message ?? "");
+        if (!isCancelled) {
           Alert.alert(
             "로그인 실패",
             err.message || "카카오 로그인 중 오류가 발생했습니다.",
@@ -138,7 +140,14 @@ export default function AuthScreen({ navigation }: Props) {
         <View style={styles.blur2} />
 
         {/* Back */}
-        <Pressable style={styles.backBtn} onPress={() => navigation.goBack()}>
+        <Pressable
+          style={styles.backBtn}
+          onPress={() =>
+            navigation.canGoBack()
+              ? navigation.goBack()
+              : navigation.reset({ index: 0, routes: [{ name: "Onboarding" }] })
+          }
+        >
           <Ionicons name="chevron-back" size={20} color={Colors.textPrimary} />
         </Pressable>
 

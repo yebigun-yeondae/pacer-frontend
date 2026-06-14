@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Dimensions,
+  View, Text, StyleSheet, Pressable, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/AppNavigator';
-
-const { width } = Dimensions.get('window');
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Onboarding'>;
@@ -25,38 +23,12 @@ export default function OnboardingScreen({ navigation }: Props) {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.logo}>SAFE PATHS</Text>
+        <Text style={styles.logo}>PACER</Text>
       </View>
 
       {/* Hero Illustration */}
       <View style={styles.hero}>
-        <View style={styles.heroBlur1} />
-        <View style={styles.heroBlur2} />
-
-        {/* Traffic Light */}
-        <View style={styles.trafficLight}>
-          <View style={[styles.light, { backgroundColor: '#444' }]} />
-          <View style={[styles.light, { backgroundColor: '#444' }]} />
-          <View style={[styles.light, styles.greenLight]} />
-        </View>
-
-        {/* Person */}
-        <View style={styles.personWrap}>
-          <View style={styles.personHair} />
-          <View style={styles.personHead} />
-          <View style={styles.personBody} />
-          <View style={styles.personLegs}>
-            <View style={[styles.personLeg, { transform: [{ rotate: '-10deg' }] }]} />
-            <View style={[styles.personLeg, { transform: [{ rotate: '10deg' }] }]} />
-          </View>
-        </View>
-
-        {/* Crosswalk */}
-        <View style={styles.crosswalk}>
-          {[0, 1, 2, 3, 4].map(i => (
-            <View key={i} style={styles.stripe} />
-          ))}
-        </View>
+        <Image source={require('../../assets/SafePath.png')} style={styles.heroImage} resizeMode="cover" />
 
         {/* Glass Card */}
         <View style={styles.glassCard}>
@@ -108,34 +80,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#d3e8d2',
   },
-  heroBlur1: {
-    position: 'absolute', width: 256, height: 256, right: -48, top: -48,
-    backgroundColor: 'rgba(211,232,210,0.3)', borderRadius: 128,
+  heroImage: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%',
   },
-  heroBlur2: {
-    position: 'absolute', width: 192, height: 192, left: -32, bottom: -32,
-    backgroundColor: 'rgba(241,232,207,0.4)', borderRadius: 96,
-  },
-  trafficLight: {
-    position: 'absolute', top: 30, right: 30, width: 36, height: 90,
-    backgroundColor: '#303330', borderRadius: 8, alignItems: 'center',
-    justifyContent: 'center', gap: 8, padding: 8,
-  },
-  light: { width: 20, height: 20, borderRadius: 10 },
-  greenLight: { backgroundColor: '#4ade80' },
-
-  personWrap: { position: 'absolute', bottom: 50, left: width / 2 - 80, width: 160, height: 260 },
-  personHair: { position: 'absolute', bottom: 200, left: 54, width: 52, height: 28, backgroundColor: '#3a2820', borderTopLeftRadius: 26, borderTopRightRadius: 26 },
-  personHead: { position: 'absolute', bottom: 180, left: 56, width: 48, height: 48, borderRadius: 24, backgroundColor: '#f5d5b8' },
-  personBody: { position: 'absolute', bottom: 50, left: 50, width: 60, height: 130, backgroundColor: '#4a6b4e', borderTopLeftRadius: 30, borderTopRightRadius: 30, borderBottomLeftRadius: 8, borderBottomRightRadius: 8 },
-  personLegs: { position: 'absolute', bottom: 0, left: 48, flexDirection: 'row', gap: 4 },
-  personLeg: { width: 16, height: 55, backgroundColor: Colors.primary, borderBottomLeftRadius: 8, borderBottomRightRadius: 8 },
-
-  crosswalk: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, height: 50,
-    flexDirection: 'row', gap: 12, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20,
-  },
-  stripe: { flex: 1, height: 8, backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: 4 },
 
   glassCard: {
     position: 'absolute', bottom: 28, left: 28, right: 28,
