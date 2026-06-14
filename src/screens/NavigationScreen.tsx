@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../theme/colors";
@@ -16,6 +16,8 @@ import { haversineMeters } from "../utils/geo";
 import { useIntersectionSignals } from "../utils/intersectionSignal";
 
 const AUTO_ADVANCE_METERS = 25;
+const SIGNAL_CLOSE_METERS = 15;
+const SIGNAL_RECEDE_MARGIN = 8;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -53,7 +55,20 @@ export default function NavigationScreen() {
     params?.routeData?.signalCheckpoints,
     true,
   );
-  const firstSignal = computedSignals[0] ?? null;
+
+  // 통과한 신호는 다음 신호로 자동 전환 (접근 후 이탈 시 인덱스 증가)
+  const [currentSignalIdx, setCurrentSignalIdx] = useState(0);
+  const currentSignalIdxRef = useRef(0);
+  const minSignalDistRef = useRef<number | null>(null);
+  useEffect(() => { currentSignalIdxRef.current = currentSignalIdx; }, [currentSignalIdx]);
+
+  const sortedSignalCheckpoints = useMemo(() => {
+    return (params?.routeData?.signalCheckpoints ?? [])
+      .slice()
+      .sort((a, b) => a.order - b.order);
+  }, [params?.routeData?.signalCheckpoints]);
+
+  const firstSignal = computedSignals[currentSignalIdx] ?? null;
   const isCurrentlyRed = firstSignal?.status === "RED";
   const isSignalUnknown = !firstSignal || firstSignal.status === "UNKNOWN";
   const signalCountdown = firstSignal?.remainingSec ?? null;
@@ -151,11 +166,29 @@ export default function NavigationScreen() {
               }
             }
           }
+
+          // 신호 자동 진행 (접근 후 이탈 시 다음 신호로 전환)
+          const sigIdx = currentSignalIdxRef.current;
+          const checkpoint = sortedSignalCheckpoints[sigIdx];
+          if (checkpoint) {
+            const dist = haversineMeters(latitude, longitude, checkpoint.lat, checkpoint.lng);
+            if (minSignalDistRef.current === null || dist < minSignalDistRef.current) {
+              minSignalDistRef.current = dist;
+            }
+            if (
+              minSignalDistRef.current <= SIGNAL_CLOSE_METERS &&
+              dist > minSignalDistRef.current + SIGNAL_RECEDE_MARGIN
+            ) {
+              currentSignalIdxRef.current = sigIdx + 1;
+              minSignalDistRef.current = null;
+              setCurrentSignalIdx(sigIdx + 1);
+            }
+          }
         },
       );
     })();
     return () => { sub?.remove(); };
-  }, [steps, destLat, destLng]);
+  }, [steps, destLat, destLng, sortedSignalCheckpoints]);
 
   // nav status 구독
   const [navStatus, setNavStatus] = useState<NavStatus>(navStatusStore.get());

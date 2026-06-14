@@ -58,6 +58,34 @@ interface BusStop {
   lng: number;
 }
 
+interface SubwayStation {
+  stationCd: string;
+  stationNm: string;
+  lineNum: string;
+  lat: number;
+  lng: number;
+}
+
+interface SubwayArrival {
+  lineId: string;
+  stationNm: string;
+  trainLineNm: string;
+  currentStation: string;
+  remainingSeconds: number;
+  arrivalMessage: string;
+  positionMessage: string;
+  arrivalCode: string;
+  lastTrain: boolean;
+}
+
+// remainingSeconds(초) → "0분 0초" 형식으로 표시
+function formatRemainingMinSec(seconds: number): string {
+  const safe = Math.max(0, seconds);
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}분 ${s}초`;
+}
+
 import { formatCreatedAt } from "../utils/format";
 
 // ── 미니 지도 HTML ─────────────────────────────────────────────────────────────
@@ -81,6 +109,8 @@ const miniMapHtml = `<!DOCTYPE html>
     var userOverlay = null;
     var stopMarkers = [];
     var stopInfoWindows = [];
+    var subwayMarkers = [];
+    var subwayInfoWindows = [];
 
     // 드래그 시작 → RN에 알림
     kakao.maps.event.addListener(map, 'dragstart', function() {
@@ -140,6 +170,40 @@ const miniMapHtml = `<!DOCTYPE html>
         stopInfoWindows.push(infowindow);
       });
     };
+
+    var subwayStationData = [];
+    window.handleSubwayMarkerClick = function(idx) {
+      var station = subwayStationData[idx];
+      if (!station) return;
+      var iw = subwayInfoWindows[idx];
+      var marker = subwayMarkers[idx];
+      if (iw.getMap()) {
+        iw.close();
+      } else {
+        iw.open(map, marker);
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'subwayClick', station: station }));
+    };
+
+    window.showSubwayStations = function(stationsJson) {
+      subwayMarkers.forEach(function(m) { m.setMap(null); });
+      subwayInfoWindows.forEach(function(iw) { iw.close(); });
+      subwayMarkers = [];
+      subwayInfoWindows = [];
+      subwayStationData = JSON.parse(stationsJson);
+      subwayStationData.forEach(function(station, idx) {
+        var pos = new kakao.maps.LatLng(station.lat, station.lng);
+        var content = '<div onclick="window.handleSubwayMarkerClick(' + idx + ')" style="background:#3b82f6;width:22px;height:22px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">M</div>';
+        var marker = new kakao.maps.CustomOverlay({ position: pos, content: content, yAnchor: 0.5, xAnchor: 0.5 });
+        marker.setMap(map);
+        var infowindow = new kakao.maps.InfoWindow({
+          content: '<div style="padding:4px 8px;font-size:11px;font-weight:600;white-space:nowrap;">' + station.stationNm + ' (' + station.lineNum + ')</div>',
+          removable: false
+        });
+        subwayMarkers.push(marker);
+        subwayInfoWindows.push(infowindow);
+      });
+    };
   </script>
 </body>
 </html>`;
@@ -164,8 +228,16 @@ export default function SearchScreen() {
   const mapCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [busStops, setBusStops] = useState<BusStop[]>([]);
+  const [subwayStations, setSubwayStations] = useState<SubwayStation[]>([]);
   const [isMapTracking, setIsMapTracking] = useState(true);
   const [isMapTouching, setIsMapTouching] = useState(false);
+
+  // 지하철 도착정보 바텀시트
+  const [arrivalModalVisible, setArrivalModalVisible] = useState(false);
+  const [selectedStation, setSelectedStation] = useState<SubwayStation | null>(null);
+  const [arrivals, setArrivals] = useState<SubwayArrival[]>([]);
+  const [isArrivalLoading, setIsArrivalLoading] = useState(false);
+  const [arrivalElapsed, setArrivalElapsed] = useState(0);
 
   // 장소 검색
   const [searchQuery, setSearchQuery] = useState("");
@@ -236,36 +308,71 @@ export default function SearchScreen() {
     }
   }, [mapLoaded]);
 
-  // 버스정류장 새로고침
+  // 버스정류장 + 지하철역 새로고침
   const handleRefreshStops = async () => {
     const loc = mapCenterRef.current ?? currentLocRef.current;
     if (!loc || isRefreshing) return;
     setIsRefreshing(true);
     try {
-      const url = `${API.busStops.nearby}?lat=${loc.lat}&lng=${loc.lng}&radiusM=${BUS_STOP_RADIUS}`;
-      const res = await fetchWithAuth(url, { method: "GET" });
-      if (!res.ok) return;
-      const raw = await res.text();
-      // TODO: 디버깅용 — 확인 후 제거
-      Alert.alert("정류장 응답", `URL: ${url}\n\n${raw.slice(0, 500)}`);
-      const data: BusStop[] = JSON.parse(raw);
-      setBusStops(data);
-      miniMapRef.current?.injectJavaScript(
-        `window.showBusStops(${JSON.stringify(JSON.stringify(data))}); true;`
-      );
+      const busUrl = `${API.busStops.nearby}?lat=${loc.lat}&lng=${loc.lng}&radiusM=${BUS_STOP_RADIUS}`;
+      const busRes = await fetchWithAuth(busUrl, { method: "GET" });
+      if (busRes.ok) {
+        const data: BusStop[] = await busRes.json();
+        setBusStops(data);
+        miniMapRef.current?.injectJavaScript(
+          `window.showBusStops(${JSON.stringify(JSON.stringify(data))}); true;`
+        );
+      }
+
+      const subwayUrl = `${API.subwayStations.nearby}?lat=${loc.lat}&lng=${loc.lng}&radiusM=${BUS_STOP_RADIUS}`;
+      const subwayRes = await fetchWithAuth(subwayUrl, { method: "GET" });
+      if (subwayRes.ok) {
+        const data: SubwayStation[] = await subwayRes.json();
+        setSubwayStations(data);
+        miniMapRef.current?.injectJavaScript(
+          `window.showSubwayStations(${JSON.stringify(JSON.stringify(data))}); true;`
+        );
+      }
     } catch {} finally {
       setIsRefreshing(false);
     }
   };
 
-  // 미니맵 메시지 핸들러 (드래그 감지)
+  // 지하철역 선택 → 도착 정보 조회 + 바텀시트 표시
+  const handleSelectStation = useCallback(async (station: SubwayStation) => {
+    setSelectedStation(station);
+    setArrivalModalVisible(true);
+    setIsArrivalLoading(true);
+    setArrivals([]);
+    setArrivalElapsed(0);
+    try {
+      const res = await fetchWithAuth(API.subwayStations.arrivals(station.stationNm), { method: "GET" });
+      if (res.ok) {
+        const data: SubwayArrival[] = await res.json();
+        setArrivals(data);
+        setArrivalElapsed(0);
+      }
+    } catch {} finally {
+      setIsArrivalLoading(false);
+    }
+  }, []);
+
+  // 도착 정보 표시 중 1초마다 잔여시간 카운트다운
+  useEffect(() => {
+    if (!arrivalModalVisible || arrivals.length === 0) return;
+    const id = setInterval(() => setArrivalElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [arrivalModalVisible, arrivals]);
+
+  // 미니맵 메시지 핸들러 (드래그 감지 + 지하철역 마커 클릭)
   const handleMapMessage = useCallback((event: any) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
       if (msg.type === 'drag') setIsMapTracking(false);
       if (msg.type === 'center') mapCenterRef.current = { lat: msg.lat, lng: msg.lng };
+      if (msg.type === 'subwayClick') handleSelectStation(msg.station as SubwayStation);
     } catch {}
-  }, []);
+  }, [handleSelectStation]);
 
   // '내 위치로' 버튼
   const handleRecenter = useCallback(() => {
@@ -531,7 +638,24 @@ export default function SearchScreen() {
             </View>
           ))}
 
-          {busStops.length === 0 && (
+          {/* 지하철역 목록 */}
+          {subwayStations.length > 0 && subwayStations.map((station) => (
+            <Pressable
+              key={station.stationCd}
+              style={styles.stopCard}
+              onPress={() => handleSelectStation(station)}
+            >
+              <View style={styles.stopHeader}>
+                <View>
+                  <Text style={styles.stopId}>{station.lineNum}</Text>
+                  <Text style={styles.stopName}>{station.stationNm}</Text>
+                </View>
+                <Ionicons name="subway-outline" size={20} color={Colors.textSecondary} />
+              </View>
+            </Pressable>
+          ))}
+
+          {busStops.length === 0 && subwayStations.length === 0 && (
             <Text style={styles.emptyText}>새로고침 버튼을 눌러 주변 정류장을 확인하세요</Text>
           )}
         </View>
@@ -572,6 +696,52 @@ export default function SearchScreen() {
               </TouchableOpacity>
             )}
           />
+        </View>
+      </Modal>
+
+      {/* 지하철 도착 정보 바텀시트 */}
+      <Modal
+        visible={arrivalModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setArrivalModalVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setArrivalModalVisible(false)} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalTitleRow}>
+            <Text style={styles.modalTitle}>{selectedStation?.stationNm ?? "역 정보"}</Text>
+            <Pressable onPress={() => setArrivalModalVisible(false)} hitSlop={12}>
+              <Ionicons name="close" size={22} color={Colors.textSecondary} />
+            </Pressable>
+          </View>
+
+          {isArrivalLoading && <ActivityIndicator color={Colors.primary} style={{ marginVertical: 16 }} />}
+
+          {!isArrivalLoading && arrivals.length === 0 && (
+            <Text style={styles.emptyText}>도착 정보가 없습니다</Text>
+          )}
+
+          {!isArrivalLoading && arrivals.length > 0 && (
+            <FlatList
+              data={arrivals}
+              keyExtractor={(item, idx) => `${item.lineId}-${item.trainLineNm}-${idx}`}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.histList}
+              renderItem={({ item }) => (
+                <View style={styles.arrivalItem}>
+                  <View style={styles.arrivalLineBadge}>
+                    <Text style={styles.arrivalLineText}>{item.lineId}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.arrivalLineName} numberOfLines={1}>{item.trainLineNm}</Text>
+                    <Text style={styles.arrivalMessage} numberOfLines={1}>{item.arrivalMessage}</Text>
+                  </View>
+                  <Text style={styles.arrivalTime}>{formatRemainingMinSec(item.remainingSeconds - arrivalElapsed)}</Text>
+                </View>
+              )}
+            />
+          )}
         </View>
       </Modal>
     </View>
@@ -682,4 +852,12 @@ const styles = StyleSheet.create({
   histDest: { fontSize: 15, fontWeight: "600", color: Colors.textPrimary },
   histSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   histDate: { fontSize: 11, color: Colors.textMuted, marginTop: 3 },
+
+  // 지하철 도착 정보
+  arrivalItem: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  arrivalLineBadge: { backgroundColor: "#3b82f6", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, flexShrink: 0 },
+  arrivalLineText: { fontSize: 12, fontWeight: "700", color: "#fff" },
+  arrivalLineName: { fontSize: 14, fontWeight: "600", color: Colors.textPrimary },
+  arrivalMessage: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  arrivalTime: { fontSize: 14, fontWeight: "700", color: Colors.primary, flexShrink: 0 },
 });

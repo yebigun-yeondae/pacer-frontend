@@ -33,8 +33,8 @@ export function computeIntersectionSignal(
     order: checkpoint.order,
     itstId: checkpoint.intersectionId,
     name: sig?.name ?? "",
-    lat: sig?.lat ?? checkpoint.lat,
-    lng: sig?.lng ?? checkpoint.lng,
+    lat: checkpoint.lat,
+    lng: checkpoint.lng,
     signalDirection: checkpoint.signalDirection,
   };
 

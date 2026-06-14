@@ -24,4 +24,9 @@ export const API = {
   busStops: {
     nearby: `${BASE_URL}/api/v1/bus-stops/nearby`, // GET  — 근처 버스정류장 (lat, lng, radiusM)
   },
+  subwayStations: {
+    nearby: `${BASE_URL}/api/v1/subway-stations/nearby`, // GET — 근처 지하철역 (lat, lng, radiusM)
+    arrivals: (stationNm: string) =>
+      `${BASE_URL}/api/v1/subway-stations/${encodeURIComponent(stationNm)}/arrivals`, // GET — 역 도착 정보
+  },
 };
