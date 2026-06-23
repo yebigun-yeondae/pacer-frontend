@@ -1,7 +1,51 @@
-# pacer-frontend
+# Pacer — 개인 맞춤형 도보 내비게이션
 
-2026년도 조선대학교 컴퓨터공학과 산학프로젝트1 프론트 레포지토리.
-교통 정보 및 인공지능을 활용한 개인 맞춤형 도보 내비게이션 앱 프로젝트
+> 2026년도 조선대학교 컴퓨터공학과 산학프로젝트1  
+> 교통 신호 정보와 AI를 결합한 **스마트 도보 내비게이션** Android 앱
+
+---
+
+## 주요 기능
+
+| 기능 | 설명 |
+|---|---|
+| 카카오 소셜 로그인 | 카카오 계정으로 간편 로그인 / JWT 자동 갱신 |
+| 지도 탐색 | 카카오맵 기반 실시간 지도 (WebView) |
+| 경로 탐색 | 출발지·목적지 설정 후 최적 보행 경로 계산 |
+| 신호등 연동 | 경로 상 신호등 상태(초록/빨강)·카운트다운 실시간 표시 |
+| 경로 안내 | 턴-바이-턴 방향 안내 + GPS 자동 스텝 진행 |
+| 속도 추천 | 다음 신호에 맞춰 권장 보행 속도(3.5 / 4.8 / 6.0 km/h) 안내 |
+| 프로필 | 사용자 프로필 조회 / 저장된 경로 관리 |
+
+---
+
+## 화면 구성
+
+```
+Onboarding → Auth (카카오 로그인)
+                ↓
+         MainTabs (하단 탭)
+         ├── Home   (SearchScreen)  — 목적지 검색
+         ├── Map    (MapScreen)     — 지도 + 경로 탐색
+         ├── Saved  (SavedScreen)   — 저장된 장소
+         └── Profile(ProfileScreen) — 프로필
+                ↓ (경로 안내 시작)
+         Safety (NavigationScreen) — 실시간 경로 안내
+```
+
+---
+
+## 기술 스택
+
+| 분류 | 기술 |
+|---|---|
+| 프레임워크 | React Native 0.81 (Expo bare workflow) |
+| 언어 | TypeScript 5.9 |
+| 내비게이션 | React Navigation 7 (Stack + Bottom Tabs) |
+| 지도 | Kakao Maps JavaScript SDK (WebView) |
+| 로그인 | @react-native-seoul/kakao-login |
+| 위치 | expo-location |
+| 상태 저장 | @react-native-async-storage/async-storage |
 
 ---
 
@@ -32,24 +76,46 @@ cd pacer-frontend
 npm install
 ```
 
-### 3. Android SDK 경로 설정
+### 3. 환경변수 설정
 
-`android/local.properties` 파일을 생성하고 본인 PC의 Android SDK 경로를 입력합니다.
+`.env.example`을 복사해서 `.env` 파일을 만들고 값을 채웁니다.
+
+```bash
+cp .env.example .env
+```
+
+```env
+# 백엔드 서버 주소
+EXPO_PUBLIC_BASE_URL=http://서버IP:8080
+
+# 카카오 네이티브 앱 키 (카카오 디벨로퍼스 → 앱 키 → 네이티브 앱 키)
+EXPO_PUBLIC_KAKAO_NATIVE_KEY=여기에_네이티브_앱_키
+
+# 카카오 JavaScript 키 (카카오맵 SDK WebView 초기화)
+EXPO_PUBLIC_KAKAO_JS_KEY=여기에_JS_키
+
+# 카카오 REST API 키 (장소 키워드 검색)
+EXPO_PUBLIC_KAKAO_REST_KEY=여기에_REST_API_키
+```
+
+> 카카오 디벨로퍼스([developers.kakao.com](https://developers.kakao.com)) → 내 애플리케이션 → 앱 키에서 발급
+
+### 4. Android SDK 경로 설정
+
+`android/local.properties` 파일을 생성합니다.
 
 **Windows:**
 ```
 sdk.dir=C\:\\Users\\본인계정\\AppData\\Local\\Android\\Sdk
 ```
 
-> Android Studio → SDK Manager → Android SDK Location 에서 경로 확인 가능
+> Android Studio → SDK Manager → Android SDK Location 에서 경로 확인
 
----
+### 5. AndroidManifest.xml HTTP 허용 설정
 
-### 4. AndroidManifest.xml HTTP 통신 허용 설정
+> Release APK 빌드 시 필수. 없으면 카카오 로그인 및 백엔드 연결이 `network request failed`로 실패합니다.
 
-> **Release APK 빌드 시 필수.** 이 설정이 없으면 카카오 로그인 및 백엔드 연결이 `network request failed`로 실패합니다.
-
-`android/app/src/main/AndroidManifest.xml` 에서 `<application` 태그에 아래 속성을 추가합니다.
+`android/app/src/main/AndroidManifest.xml`의 `<application` 태그에 추가:
 
 ```xml
 <application
@@ -57,17 +123,11 @@ sdk.dir=C\:\\Users\\본인계정\\AppData\\Local\\Android\\Sdk
   android:usesCleartextTraffic="true">
 ```
 
-추가 후 전체 모습:
-
-```xml
-<application android:name=".MainApplication" android:label="@string/app_name" ... android:usesCleartextTraffic="true">
-```
-
 ---
 
 ## 실행 방법
 
-### USB로 연결해서 바로 실행하기 (가장 빠름)
+### USB 연결 실행 (권장)
 
 1. 안드로이드 폰에서 **개발자 옵션 → USB 디버깅** 활성화
 2. USB로 PC에 연결
@@ -75,16 +135,14 @@ sdk.dir=C\:\\Users\\본인계정\\AppData\\Local\\Android\\Sdk
 ```bash
 adb devices
 ```
-4. 앱 빌드 후 자동 설치 및 실행:
+4. 빌드 + 설치 + 실행:
 ```bash
 npx expo run:android
 ```
 
-> 처음 실행 시 빌드에 5~10분 소요. 이후 재실행은 빠름.
+> 첫 실행 시 빌드에 5~10분 소요. 이후 재실행은 빠름.
 
----
-
-### 개발 서버만 띄우고 앱에서 연결하기
+### 개발 서버 연결 (Wi-Fi)
 
 PC와 폰이 **같은 와이파이**에 있어야 합니다.
 
@@ -92,7 +150,7 @@ PC와 폰이 **같은 와이파이**에 있어야 합니다.
 npx expo start
 ```
 
-실행 후 앱에서 QR코드 스캔 또는 `http://PC_IP:8081` 입력해서 연결
+앱에서 QR코드 스캔 또는 `http://PC_IP:8081` 입력
 
 ---
 
@@ -105,55 +163,112 @@ cd android
 ./gradlew assembleDebug
 ```
 
-빌드 결과: `android/app/build/outputs/apk/debug/app-debug.apk`
+결과물: `android/app/build/outputs/apk/debug/app-debug.apk`
 
-> 이 APK는 Dev Client 앱이라 실행 시 개발 서버 연결 화면이 뜸 (`npx expo start` 필요)
+> Dev Client 앱 — 실행 시 개발 서버 연결 화면이 뜸 (`npx expo start` 필요)
 
----
-
-### Release APK (배포용 — 단독 설치 가능)
+### Release APK (배포용)
 
 ```bash
 cd android
 ./gradlew assembleRelease
 ```
 
-빌드 결과: `android/app/build/outputs/apk/release/app-release.apk`
+결과물: `android/app/build/outputs/apk/release/app-release.apk`
 
-> 이 APK는 서버 연결 없이 바로 설치해서 사용 가능. 친구한테 파일 전달하면 됨.
+> 서버 연결 없이 단독 설치 가능. APK 파일만 전달하면 됨.
 
----
+### APK 폰에 설치
 
-### APK 폰에 설치하기
-
-빌드된 APK 파일을 폰으로 전송 후:
-- 파일 관리자에서 APK 터치
-- **"출처를 알 수 없는 앱 허용"** 설정 후 설치
-
-또는 adb로 바로 설치:
 ```bash
 adb install android/app/build/outputs/apk/release/app-release.apk
 ```
 
+또는 폰으로 파일 전송 후 파일 관리자에서 터치 → **"출처를 알 수 없는 앱 허용"** 후 설치
+
 ---
 
-## 백엔드 서버
+## 프로젝트 구조
 
-`src/api/config.ts` 에서 서버 주소를 관리합니다.
-
-```ts
-export const BASE_URL = 'http://xx.xx.xx.xx:8080';
+```
+src/
+├── api/
+│   ├── config.ts        — API 엔드포인트 상수
+│   ├── authApi.ts       — 카카오 로그인 / JWT 처리
+│   ├── profileApi.ts    — 프로필 조회
+│   └── routeApi.ts      — 경로 탐색 / 신호 파싱 / 포맷 유틸
+├── navigation/
+│   └── AppNavigator.tsx — Stack + Tab 네비게이터
+├── screens/
+│   ├── OnboardingScreen.tsx  — 온보딩
+│   ├── AuthScreen.tsx        — 카카오 로그인
+│   ├── SearchScreen.tsx      — 목적지 검색 (Home 탭)
+│   ├── MapScreen.tsx         — 지도 + 경로 탐색
+│   ├── NavigationScreen.tsx  — 실시간 경로 안내
+│   ├── SavedScreen.tsx       — 저장된 장소
+│   └── ProfileScreen.tsx     — 프로필
+├── theme/
+│   ├── colors.ts        — 컬러 팔레트
+│   └── typography.ts    — 폰트 설정
+└── utils/
+    └── storage.ts       — AsyncStorage JWT 관리
 ```
 
-백엔드 서버 주소가 바뀌면 이 파일만 수정하면 됩니다.
+---
+
+## 백엔드 API
+
+`src/api/config.ts`에서 엔드포인트를 관리합니다. 서버 주소는 `.env`의 `EXPO_PUBLIC_BASE_URL`로 설정합니다.
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| POST | `/api/v1/auth/kakao` | 카카오 토큰 → 서버 JWT 발급 |
+| POST | `/api/v1/auth/reissue` | JWT 갱신 |
+| POST | `/api/v1/auth/logout` | 로그아웃 |
+| GET | `/api/v1/profile` | 프로필 조회 |
+| POST | `/api/v1/routes` | 경로 탐색 (신호 정보 포함) |
+
+### 경로 탐색 요청 예시
+
+```json
+{
+  "origin": { "lat": 37.5665, "lng": 126.9780 },
+  "destination": { "lat": 37.5500, "lng": 126.9900 },
+  "originName": "현재 위치",
+  "destinationName": "목적지명",
+  "mode": "BALANCED"
+}
+```
+
+`mode`: `BALANCED` | `FASTEST` | `SHORTEST`
+
+### 경로 탐색 응답 예시
+
+```json
+{
+  "polyline": "인코딩된_폴리라인",
+  "totalTimeSeconds": 900,
+  "totalDistanceMeters": 1200,
+  "signalCheckpoints": [
+    {
+      "nodeId": 1,
+      "lat": 37.560,
+      "lng": 126.975,
+      "etaFromStartSeconds": 120,
+      "signalState": "GREEN",
+      "recommendedPace": "NORMAL"
+    }
+  ]
+}
+```
 
 ---
 
-## 주요 기술 스택
+## 브랜치 전략
 
-- React Native (Expo bare workflow)
-- TypeScript
-- Kakao Maps SDK (지도)
-- Kakao Login SDK (소셜 로그인)
-- expo-location (GPS)
-- react-native-webview
+| 브랜치 | 용도 |
+|---|---|
+| `main` | 배포 기준 브랜치 |
+| `develop` | 개발 통합 브랜치 |
+| `feat/*` | 기능 개발 |
+| `fix/*` | 버그 수정 |
